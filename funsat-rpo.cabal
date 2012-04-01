@@ -31,7 +31,7 @@ Maintainer:          pepeiborra@gmail.com
 -- A copyright notice.
 -- Copyright:           
 
-Category:            Math
+Category:            Logic
 
 Build-type:          Simple
 
@@ -46,11 +46,17 @@ Cabal-version:       >=1.2
 Library
   -- Modules exported by the library.
   Exposed-modules:     Funsat.RPOCircuit
+                       Funsat.RPOCircuit.Internal
+                       Funsat.RPOCircuit.Symbols
   
   -- Packages needed in order to build this package.
   Build-depends:       base, ghc-prim, mtl, array, containers, prettyclass, fgl, bifunctors,
                        bytestring, filepath, funsat-lang, term, hashable, hashmap, bimap, split
   
+  ghc-options: -Wall -Werror -fno-warn-name-shadowing -fno-warn-missing-signatures -fno-warn-orphans
+
+  extensions: CPP
+
   -- Modules not exported by this package.
   -- Other-modules:       
   

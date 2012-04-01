@@ -6,7 +6,6 @@
 {-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE OverlappingInstances #-}
 {-# LANGUAGE UndecidableInstances #-}
-
 {-# LANGUAGE FlexibleContexts, FlexibleInstances, TypeSynonymInstances #-}
 {-# LANGUAGE EmptyDataDecls #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -16,36 +15,43 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
+{-# LANGUAGE CPP #-}
 {- LANGUAGE NoMonoLocalBinds #-}
 
 {-| Extension of Funsat.Circuit to generate RPO constraints as boolean circuits
 
 -}
 module Funsat.RPOCircuit
-   (Circuit(..)
-   ,ECircuit(..)
-   ,NatCircuit(..)
-   ,OneCircuit(..), oneDefault, oneExist
-   ,RPOCircuit(..), CoRPO, termGt_, termGe_, termEq_
+   (
+   -- * Circuit language extensions for RPO circuits
+   -- ** The language extension for RPO circuits
+    RPOCircuit(..), Co, CoRPO, termGt_, termGe_, termEq_
+   -- ** The language extension for multi term RPO comparisons
    ,RPOExtCircuit(..)
-   ,ExistCircuit(..)
-   ,AssertCircuit(..), assertCircuits
-   ,CastCircuit(..)
+   -- ** The language extension for an efficient only-one-true predicate
+   ,OneCircuit(..), oneDefault, oneExist
+   -- ** The language extension for asserting a fact
+   ,AssertCircuit(..)
+   -- * Type classes for RPO identifiers
    ,HasPrecedence(..), precedence
    ,HasFiltering(..), listAF, inAF
    ,HasStatus(..), useMul, lexPerm
+   -- * Concrete implementations
+   -- ** An implementation via boolean circuits with sharing
    ,Shared(..), FrozenShared(..), runShared
---   ,EvalM, Eval, EvalF(..), BEnv, BIEnv
 --   ,runEval, runEvalM, evalB, evalN
+   -- ** An implementation via graphs for displaying
    ,Graph(..), NodeType(..), EdgeType(..), shareGraph, shareGraph', runGraph
-   ,Tree(..), TreeF(..), simplifyTree, printTree, mapTreeTerms
+   -- ** An implementation via trees for representation
+   ,Tree(..), TreeF(..), simplifyTree, printTree, mapTreeTerms, typeCheckTree, collectIdsTree, CircuitType(..)
    ,tOpen, tTrue, tFalse, tNot, tOne, tAnd, tOr, tXor, tIff, tOnlyIf, tEq, tLt, tIte, tTermGt, tTermEq
+   -- ** An evaluator
    ,WrapEval(..)
-   ,ECircuitProblem(..), RPOCircuitProblem(..)
-   ,CNF(..)
+   -- * Tools
+   ,RPOCircuitProblem(..)
    ,removeComplex, removeExist
    ,toCNF, toCNF'
-   ,projectECircuitSolution, projectRPOCircuitSolution
+   ,projectRPOCircuitSolution
    ,reconstructNatsFromBits
    ) where
 
@@ -70,8 +76,8 @@ module Funsat.RPOCircuit
 
 import Control.Applicative
 import qualified Data.Array as A
-import Control.Arrow (first, second)
-import Control.Exception as CE (assert)
+import Control.Arrow (first)
+import Control.Exception as CE (assert, throw, catch, evaluate, AssertionFailed(..))
 import Control.Monad.Cont
 import Control.Monad.Reader
 import Control.Monad.RWS (execRWS, tell)
@@ -81,16 +87,15 @@ import Data.Bifunctor     ( Bifunctor(bimap) )
 import Data.Bifoldable    ( Bifoldable(bifoldMap) )
 import Data.Bitraversable ( Bitraversable (bitraverse), bimapDefault, bifoldMapDefault )
 import Data.Bimap( Bimap )
-import Data.ByteString.Lazy.Char8 (ByteString)
-import Data.Foldable (Foldable, foldMap)
-import Data.List( nub, foldl', sortBy, (\\))
+import Data.Foldable (Foldable)
+import Data.List( nub,  sortBy)
 import Data.List.Split (chunk)
-import Data.Map( Map )
 import Data.Maybe( fromJust )
 import Data.Hashable
 import Data.Monoid (Monoid(..))
 import Data.Set( Set )
-import Data.Traversable (Traversable, traverse, fmapDefault, foldMapDefault)
+import Data.Traversable (Traversable, traverse)
+import System.IO.Unsafe
 import Prelude hiding( not, and, or, (>) )
 
 import Funsat.ECircuit ( Circuit(..)
@@ -99,20 +104,18 @@ import Funsat.ECircuit ( Circuit(..)
                        , ExistCircuit(..)
                        , CastCircuit(..)
                        , CircuitHash, falseHash, trueHash
-                       , Eval, EvalF(..), BEnv, BIEnv, runEval, fromBinary
+                       , Eval, EvalF(..), fromBinary
                        , ECircuitProblem(..)
-                       , projectECircuitSolution, reconstructNatsFromBits)
-import Funsat.Types( CNF(..), Lit(..), Var(..), var, lit, Solution(..), litSign, litAssignment )
+                       , reconstructNatsFromBits)
+import Funsat.Types( CNF(..), Var(..), var, lit, Solution(..), litSign, litAssignment )
+import Funsat.RPOCircuit.Internal
 
-
-import qualified Data.ByteString.Lazy.Char8 as BS
 import qualified Data.Graph.Inductive.Graph as Graph
 import qualified Data.Graph.Inductive.Graph as G
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Data.Traversable as T
 import qualified Data.Bimap as Bimap
-import qualified Funsat.Circuit  as Circuit
 import qualified Funsat.ECircuit as ECircuit
 import qualified Prelude as Prelude
 import qualified Data.HashMap as HashMap
@@ -133,11 +136,14 @@ class Circuit repr => OneCircuit repr where
     one  :: (Co repr var) => [repr var] -> repr var
     one  = oneDefault
 
+class Circuit repr => AssertCircuit repr where
+  assertCircuit :: repr a -> repr a -> repr a
+
 oneExist :: (ECircuit repr, ExistCircuit repr, Co repr v) => [repr v] -> repr v
 oneExist [] = false
 oneExist vv = (`runCont` id) $ do
-          ones  <- replicateM (length vv) (cont exists)
-          zeros <- replicateM (length vv) (cont exists)
+          ones  <- replicateM (length vv) (cont existsBool)
+          zeros <- replicateM (length vv) (cont existsBool)
           let encoding = andL
                   [ (one_i  `iff` ite b_i zero_i1 one_i1) `and`
                     ( zero_i `iff` (not b_i `and` zero_i1))
@@ -180,15 +186,6 @@ class RPOCircuit repr term => RPOExtCircuit repr term where
                         ,CoRPO repr term v) =>
                         Family.Id term -> Family.Id term -> [term] -> [term] -> repr v
     exGe id_s id_t ss tt = exGt id_s id_t ss tt `or` exEq id_s id_t ss tt
-
-class AssertCircuit repr where
-  assertCircuit :: Co repr v
-                => repr v  -- ^ Assertion side-effect
-                -> repr v  -- ^ expression
-                -> repr v  -- ^ expression
-
-assertCircuits [] e = e
-assertCircuits (a:aa) e = assertCircuit a $ assertCircuits aa e
 
 class HasPrecedence v a | a -> v where precedence_v  :: a -> v
 class HasFiltering  v a | a -> v where listAF_v      :: a -> v
@@ -294,10 +291,9 @@ termGe_ s t
     all f = andL . map f
     any f = orL  . map f
 
-    infixr 8 /\, >, >~, ~~
+    infixr 8 /\, >~, ~~
     infixr 7 -->
 
-    s > t   = termGt s t
     s >~ t  = termGe s t
     s ~~ t  = termEq s t
     a /\  b = a `and` b
@@ -333,13 +329,10 @@ termEq_ s t
     ~(Just id_t) = rootSymbol t
 
     all f = andL . map f
-    any f = orL  . map f
 
-    infixr 8 >
     infixr 8 ~~
     infixr 7 -->
 
-    s > t   = termGt s t
     s ~~ t  = termEq s t
     a --> b = onlyif a b
 
@@ -370,9 +363,9 @@ termEq_ s t
 -- compact representation that facilitates converting to CNF.  See `runShared'.
 newtype Shared term v = Shared { unShared :: Lazy.State (CMaps term v) CCode }
 
-type instance Family.Id1 (Shared term) = Family.Id term
+type instance Family.Id1    (Shared term) = Family.Id term
 type instance Family.TermFM (Shared term) = Family.TermF term
-type instance Family.VarM (Shared term) = Family.Var term
+type instance Family.VarM   (Shared term) = Family.Var term
 
 -- | A shared circuit that has already been constructed.
 data FrozenShared term v = FrozenShared !CCode !(CMaps term v) deriving Eq
@@ -389,7 +382,7 @@ runShared :: (Hashable term, Ord term) => Shared term v -> FrozenShared term v
 runShared = runShared' emptyCMaps
 
 runShared' :: (Hashable term, Ord term) => CMaps term v -> Shared term v -> FrozenShared term v
-runShared' maps = uncurry frozenShared . (`Lazy.runState` emptyCMaps) . unShared
+runShared' _ = uncurry frozenShared . (`Lazy.runState` emptyCMaps) . unShared
 
 getChildren :: (Ord v, Hashable v) => CCode -> CircuitHash :<->: v -> v
 getChildren code codeMap =
@@ -415,7 +408,8 @@ instance (ECircuit c, NatCircuit c, ExistCircuit c) => CastCircuit (FrozenShared
       where
         go (CTrue{})     = return true
         go (CFalse{})    = return false
-        go (CExist c)    = cont exists
+        go (CExistBool _)= cont existsBool
+        go (CExistNat  _)= cont existsNat
         go c@(CVar{})    = return $ input $ getChildren' c (varMap maps)
         go c@(CAnd{})    = liftM(uncurry and)     . go2 $ getChildren c (andMap maps)
         go c@(COr{})     = liftM(uncurry or)      . go2 $ getChildren c (orMap maps)
@@ -453,7 +447,8 @@ data CCode    = CTrue   { circuitHash :: !CircuitHash }
               | CEq     { circuitHash :: !CircuitHash }
               | CLt     { circuitHash :: !CircuitHash }
               | COne    { circuitHash :: !CircuitHash }
-              | CExist  { circuitHash :: !CircuitHash }
+              | CExistBool  { circuitHash :: !CircuitHash }
+              | CExistNat   { circuitHash :: !CircuitHash }
              deriving (Eq, Ord, Show, Read)
 
 instance Hashable CCode where hash = circuitHash
@@ -465,7 +460,7 @@ data CMaps term v = CMaps
     -- ^ Source of unique IDs used in `Shared' circuit generation.  Should not
     -- include 0 or 1.
 
-    , varMap    :: !(Bimap CircuitHash v)
+    , varMap    :: !(CircuitHash :<->: v)
      -- ^ Mapping of generated integer IDs to variables.
     , freshSet  :: !(Set CircuitHash)
     , andMap    :: !(CircuitHash :<->: (CCode, CCode))
@@ -487,6 +482,46 @@ data CMaps term v = CMaps
 deriving instance (Hashable term, Show term, Show v) => Show (CMaps term v)
 deriving instance (Hashable term, Eq term, Eq v) => Eq (CMaps term v)
 
+validCMaps :: forall term v . Ord v => CMaps term v -> Bool
+validCMaps cmaps =
+    Prelude.and
+        [ validBimap2 andMap
+        , validBimap2 orMap
+        , validBimap1 notMap
+        , validBimap2 xorMap
+        , validBimap2 onlyifMap
+        , validBimap2 iffMap
+        , validBimap3 iteMap
+        , validBimap2 eqMap
+        , validBimap2 ltMap
+        , validBimapList oneMap
+        ]
+    where
+      exists :: (Ord a, Ord k) => k -> (CMaps term v -> k :<->: a) -> Bool
+      exists h m = Bimap.member h (m cmaps)
+      valid (CTrue _)  = True
+      valid (CFalse _) = True
+      valid (CVar h)   = exists h varMap
+      valid (CAnd h)   = exists h andMap
+      valid (COr  h)   = exists h orMap
+      valid (CNot h)   = exists h notMap
+      valid (CXor h)   = exists h xorMap
+      valid (COnlyif h)= exists h onlyifMap
+      valid (CIff h)   = exists h iffMap
+      valid (CIte h)   = exists h iteMap
+      valid (CNat h)   = exists h natMap
+      valid (CEq  h)   = exists h eqMap
+      valid (CLt  h)   = exists h ltMap
+      valid (COne h)   = exists h oneMap
+      valid (CExistBool _) = True
+      valid (CExistNat _) = True
+
+      bimapKeysPred :: forall k a . (a -> Bool) -> (CMaps term v -> k :<->: a) -> Bool
+      bimapKeysPred p = all p . Bimap.keysR . ($ cmaps)
+      validBimap1    = bimapKeysPred valid
+      validBimap2    = bimapKeysPred (\(h1,h2) -> valid h1 && valid h2)
+      validBimap3    = bimapKeysPred (\(h1,h2,h3) -> valid h1 && valid h2 && valid h3)
+      validBimapList = bimapKeysPred (all valid)
 
 -- | A `CMaps' with an initial `hashCount' of 2.
 emptyCMaps :: (Hashable term, Ord term) => CMaps term v
@@ -571,10 +606,14 @@ instance Circuit (Shared term) where
 
 
 instance ExistCircuit (Shared term) where
-    exists k  = Shared $ do
+    existsBool k  = Shared $ do
         c:cs <- gets hashCount
         modify $ \s -> s{freshSet = Set.insert c (freshSet s), hashCount=cs}
-        unShared . k . Shared . return . CExist $ c
+        unShared . k . Shared . return . CExistBool $ c
+    existsNat k  = Shared $ do
+        c:cs <- gets hashCount
+        modify $ \s -> s{freshSet = Set.insert c (freshSet s), hashCount=cs}
+        unShared . k . Shared . return . CExistNat $ c
 
 instance ECircuit (Shared term) where
     xor = liftShared2 xor_ where
@@ -702,20 +741,20 @@ data TreeF term (a :: *)
 instance Bifunctor TreeF where bimap = bimapDefault
 instance Bifoldable TreeF where bifoldMap = bifoldMapDefault
 instance Bitraversable TreeF where
-  bitraverse f g TTrue = pure TTrue
-  bitraverse f g TFalse = pure TFalse
-  bitraverse f g (TNot t) = TNot <$> g t
-  bitraverse f g (TAnd t u) = TAnd <$> g t <*> g u
-  bitraverse f g (TOr  t u) = TOr  <$> g t <*> g u
-  bitraverse f g (TXor t u) = TXor <$> g t <*> g u
-  bitraverse f g (TIff t u) = TIff <$> g t <*> g u
-  bitraverse f g (TOnlyIf t u) = TOnlyIf <$> g t <*> g u
-  bitraverse f g (TIte i t e)  = TIte    <$> g i <*> g t <*> g e
-  bitraverse f g (TEq t u)  = TEq <$> g t <*> g u
-  bitraverse f g (TLt t u)  = TLt <$> g t <*> g u
-  bitraverse f g (TOne tt)  = TOne <$> traverse g tt
-  bitraverse f g (TTermEq t u) = TTermEq <$> f t <*> f u
-  bitraverse f g (TTermGt t u) = TTermGt <$> f t <*> f u
+  bitraverse _ _ TTrue = pure TTrue
+  bitraverse _ _ TFalse = pure TFalse
+  bitraverse _ g (TNot t) = TNot <$> g t
+  bitraverse _ g (TAnd t u) = TAnd <$> g t <*> g u
+  bitraverse _ g (TOr  t u) = TOr  <$> g t <*> g u
+  bitraverse _ g (TXor t u) = TXor <$> g t <*> g u
+  bitraverse _ g (TIff t u) = TIff <$> g t <*> g u
+  bitraverse _ g (TOnlyIf t u) = TOnlyIf <$> g t <*> g u
+  bitraverse _ g (TIte i t e)  = TIte    <$> g i <*> g t <*> g e
+  bitraverse _ g (TEq t u)  = TEq <$> g t <*> g u
+  bitraverse _ g (TLt t u)  = TLt <$> g t <*> g u
+  bitraverse _ g (TOne tt)  = TOne <$> traverse g tt
+  bitraverse f _ (TTermEq t u) = TTermEq <$> f t <*> f u
+  bitraverse f _ (TTermGt t u) = TTermGt <$> f t <*> f u
 
 data Tree term v = TNat v
                  | TLeaf v
@@ -725,9 +764,18 @@ data Tree term v = TNat v
 instance Bifunctor Tree where bimap = bimapDefault
 instance Bifoldable Tree where bifoldMap = bifoldMapDefault
 instance Bitraversable Tree where
-  bitraverse f g (TNat v)  = TNat  <$> g v
-  bitraverse f g (TLeaf v) = TLeaf <$> g v
+  bitraverse _ g (TNat v)  = TNat  <$> g v
+  bitraverse _ g (TLeaf v) = TLeaf <$> g v
   bitraverse f g (TFix t)  = TFix  <$> bitraverse f (bitraverse f g) t
+
+foldTree fnat  _ _ (TNat v)  = fnat v
+foldTree _ fleaf _ (TLeaf v) = fleaf v
+foldTree fn fl f (TFix t) = f (fmap (foldTree fn fl f) t)
+
+foldTreeM :: Monad f => (v -> f res) -> (v -> f res) -> (TreeF term res -> f res) -> Tree term v -> f res
+foldTreeM fnat _ _ (TNat v) = fnat v
+foldTreeM _ fleaf _ (TLeaf v) = fleaf v
+foldTreeM fn fl f (TFix t) = f =<< T.mapM (foldTreeM fn fl f) t
 
 tLeaf   = TLeaf
 tNat    = TNat
@@ -763,10 +811,9 @@ tId (TOnlyIf t1 t2) = tOnlyIf t1 t2
 tId (TEq t1 t2) = tEq t1 t2
 tId (TLt t1 t2) = tLt t1 t2
 tId (TIte c t e) = tIte c t e
-
-foldTree fnat  _ _ (TNat v)  = fnat v
-foldTree _ fleaf _ (TLeaf v) = fleaf v
-foldTree fn fl f (TFix t) = f (fmap (foldTree fn fl f) t)
+--tId (TTermGt t u) = tTermGt t u
+--tId (TTermEq t u) = tTermEq t u
+tId _ = error "internal error - unreachable"
 
 mapTreeTerms :: (term -> term') -> Tree term v -> Tree term' v
 mapTreeTerms f = foldTree tNat tLeaf f'
@@ -813,6 +860,33 @@ collectIdsTree = foldTree (const mempty) (const mempty) f
    f TOne{} = mempty
    f TTrue  = mempty
    f TFalse = mempty
+   f TEq{}  = mempty
+   f TLt{}  = mempty
+
+data CircuitType = Nat | Bool deriving (Eq, Show)
+
+typeCheckTree :: Show term => Tree term v -> Maybe CircuitType
+typeCheckTree = foldTreeM (const (pure Nat)) (const (pure Bool)) f where
+    f TFalse = return Bool
+    f TTrue  = return Bool
+    f (TNot Bool) = return Bool
+    f (TAnd Bool Bool) = return Bool
+    f (TOr  Bool Bool) = return Bool
+    f (TXor Bool Bool) = return Bool
+    f (TIff Bool Bool) = return Bool
+    f (TOnlyIf Bool Bool) = return Bool
+    f (TIte Bool a b)
+      | a==b = return a
+      | otherwise    = fail "TIte"
+    f (TOne vv)
+      | all ((==) Bool) vv = return Bool
+      | otherwise = fail "TOne"
+    f TTermGt{} = return Bool
+    f TTermEq{} = return Bool
+    f (TEq Nat Nat) = return Bool
+    f (TLt Nat Nat) = return Bool
+    f other = fail (show other)
+
 
 -- | Performs obvious constant propagations.
 simplifyTree :: (Eq a, Eq term) => Tree term a -> Tree term a
@@ -822,7 +896,7 @@ simplifyTree = foldTree TNat TLeaf f where
 
   f (TNot (tOpen -> Just TTrue))  = tFalse
   f (TNot (tOpen -> Just TFalse)) = tTrue
-  f it@(TNot t) = tClose it
+  f it@TNot{} = tClose it
 
   f (TAnd (tOpen -> Just TFalse) _) = tFalse
   f (TAnd (tOpen -> Just TTrue) r)  = r
@@ -946,25 +1020,6 @@ instance RPOCircuit (Tree term) term where
 --    ------------------
 -- ** Circuit evaluator
 --    ------------------
-newtype Flip t a b = Flip {unFlip::t b a}
-type EvalM = Flip EvalF
-
-fromLeft :: Either l r -> l
-fromLeft (Left l) = l
-fromRight :: Either l r -> r
-fromRight (Right r) = r
-
-runEvalM :: BIEnv e -> EvalM e a -> a
-runEvalM env = flip unEval env . unFlip
-
-instance Functor (EvalM v) where fmap f (Flip (Eval m)) = Flip $ Eval $ \env -> f(m env)
-instance Monad (EvalM v) where
-  return x = Flip $ Eval $ \_ -> x
-  m >>= f  = Flip $ Eval $ \env -> runEvalM env $ f $ runEvalM env m
-
-instance MonadReader (BIEnv v) (EvalM v) where
-  ask       = Flip $ Eval $ \env -> env
-  local f m = Flip $ Eval $ \env -> runEvalM (f env) m
 
 instance OneCircuit Eval where
   one tt    = Eval (\env -> Right $ case filter id $  map (fromRight . (`unEval` env)) tt of
@@ -977,6 +1032,7 @@ instance RPOCircuit Eval (Term termF var) where
       , Eq (Term termF var)
       , Foldable termF, HasId termF
       , HasStatus v (Id1 termF), HasFiltering v (Id1 termF), HasPrecedence v (Id1 termF)
+      , Pretty (Id1 termF), Show (Id1 termF)
       )
 
   termGt t u = unFlip (Right `liftM` (>) evalRPO t u)
@@ -1017,6 +1073,7 @@ instance RPOCircuit (WrapEval (Term termF var)) (Term termF var) where
        , Eq (Term termF var)
        , Foldable termF, HasId termF
        , HasStatus v (Id1 termF), HasFiltering v (Id1 termF), HasPrecedence v (Id1 termF)
+       , Pretty (Id1 termF), Show (Id1 termF)
        , Hashable v
        )
    termGt t u = WrapEval $ unFlip (Right `liftM` (>)  evalRPO t u)
@@ -1025,15 +1082,10 @@ instance RPOCircuit (WrapEval (Term termF var)) (Term termF var) where
 
 data RPOEval a v = RPO {(>), (>~), (~~) :: a -> a -> Flip EvalF v Bool}
 
-evalB :: Eval v -> EvalM v Bool
-evalN :: Eval v -> EvalM v Int
-evalB c = liftM (fromRight :: Either Int Bool -> Bool) (eval c)
-evalN c = liftM (fromLeft  :: Either Int Bool -> Int)  (eval c)
-eval  c = do {env <- ask; return (runEval env c)}
-
 evalRPO :: forall termF id v var.
            (HasPrecedence v id, HasStatus v id, HasFiltering v id
            ,Ord v, Hashable v, Show v
+           ,Pretty id, Show id
            ,Eq(Term termF var)
            ,Foldable termF, HasId termF
            ,id ~ Id1 termF
@@ -1050,7 +1102,7 @@ evalRPO = RPO{..} where
    | s == t = return True
 
    | Just id_s <- rootSymbol s, tt_s <- directSubterms s
-   , Just id_t <- rootSymbol t, tt_t <- directSubterms t
+   , Just id_t <- rootSymbol t
    , id_s == id_t
    = do
      af_s <- compFiltering id_s
@@ -1135,6 +1187,7 @@ evalRPO = RPO{..} where
             lexD (maybe ss' (permute ss) ps)
                  (maybe tt' (permute tt) pt)
           _ -> error "exgt: Cannot compare two symbols with incompatible statuses"
+   | otherwise = error "internal error"
 
   exeq s t
    | Just id_t <- rootSymbol t, tt <- directSubterms t
@@ -1153,6 +1206,7 @@ evalRPO = RPO{..} where
             lexeqD (maybe ss' (permute ss) ps)
                    (maybe tt' (permute tt) pt)
           _ -> error "exeq:Cannot compare two symbols with incompatible statuses"
+   | otherwise = error "internal error"
 
   lexD []     _      = return False
   lexD _      []     = return True
@@ -1179,7 +1233,7 @@ evalRPO = RPO{..} where
     rem1 (x:xx) y = p x y >>= \b -> if b then return xx else rem1 xx y
 
   acmatchM p = go [] where
-    go acc [] = return Nothing
+    go _ [] = return Nothing
     go acc (x:xs) = p x >>= \b -> if b then return $ Just (x, reverse acc ++ xs)
                                        else go (x:acc) xs
 
@@ -1194,14 +1248,16 @@ evalRPO = RPO{..} where
   allM  f xx = Prelude.and `liftM` mapM f xx
   anyM  f xx = Prelude.or  `liftM` mapM f xx
 
+  sel :: Int -> [Int] -> [a] -> [a]
   sel n ii = selectSafe ("Narradar.Constraints.SAT.RPOCircuit.Eval - " ++ show n) (map pred ii)
   permute ff ii = map fst $ dropWhile ( (<0) . snd) $ sortBy (compare `on` snd) (zip ff ii)
   on cmp f x y = f x `cmp` f y
---  evalPerm :: HasStatus id v => id -> Flip Eval v (Maybe [Int])
+
+--  evalPerm :: HasStatus id v => id -> EvalM v (Maybe [Int])
   evalPerm id = do
     bits <- (T.mapM . mapM . mapM) evalB (lexPerm id)
     let perm = (fmap.fmap)
-                 (\perm_i -> head ([i | (i,True) <- zip [1..] perm_i] ++ [-1]))
+                 (\perm_i -> head ([i | (i,True) <- zip [(1::Int)..] perm_i] ++ [-1]))
                  bits
     return perm
 
@@ -1209,15 +1265,16 @@ evalRPO = RPO{..} where
     isList:filtering <- mapM (evalB.input) (listAF_v id : filtering_vv id)
     let positions = [ i | (i, True) <- zip [1..] filtering ]
     return $ if isList then Right positions
-             else CE.assert (length positions == 1) $ Left (head positions)
+             else assert'
+                      ("there should be one filtered positions for " ++ (show$ pPrint id) ++
+                       ", instead they are " ++ show positions ++ ".\n" ++ show id)
+                      (length positions == 1)
+                      (Left (head positions))
+
 
   applyFiltering (Right ii) tt = selectSafe "RPOCircuit.verifyRPOAF.applyFiltering" (map pred ii) tt
   applyFiltering (Left j)   tt = [safeAtL   "RPOCircuit.verifyRPOAF.applyFiltering" tt (pred j)]
 
-  sel6 = sel 6
-  sel7 = sel 7
-  sel8 = sel 8
-  sel9 = sel 9
 
 -- ** Graph circuit
 
@@ -1382,28 +1439,30 @@ shareGraph (FrozenShared output cmaps) =
         return (i, (i, frz c) : nodes, (child, i, frz c) : edges)
     go c@(CAnd i) = extract i andMap >>= tupM2 go >>= addKids c
     go c@(COr i) = extract i orMap >>= tupM2 go >>= addKids c
+    go c@(COne i) = extract i oneMap >>= mapM go >>= addAllKids c
     go c@(CXor i) = extract i xorMap >>= tupM2 go >>= addKids c
     go c@(COnlyif i) = extract i onlyifMap >>= tupM2 go >>= addKids c
     go c@(CIff i) = extract i iffMap >>= tupM2 go >>= addKids c
-    go c@(CIte i) = do (x, y, z) <- extract i iteMap
-                       ( (cNode, cNodes, cEdges)
-                        ,(tNode, tNodes, tEdges)
-                        ,(eNode, eNodes, eEdges)) <- liftM3 (,,) (go x) (go y) (go z)
-                       return (i, (i, frz c) : cNodes ++ tNodes ++ eNodes
-                              ,(cNode, i, frz c)
-                               : (tNode, i, frz c)
-                               : (eNode, i, frz c)
-                               : cEdges ++ tEdges ++ eEdges)
+    go c@(CIte i) = do (x, y, z)  <- extract i iteMap
+                       (x',y',z') <- liftM3 (,,) (go x) (go y) (go z)
+                       addAllKids c [x',y',z']
 
     go c@(CEq i) = extract i eqMap >>= tupM2 go >>= addKids c
     go c@(CLt i) = extract i ltMap >>= tupM2 go >>= addKids c
     go c@(CNat i) = return (i, [(i, frz c)], [])
-    go c@(CExist i) = return (i, [(i, frz c)], [])
+    go c@(CExistBool i) = return (i, [(i, frz c)], [])
+    go c@(CExistNat  i) = return (i, [(i, frz c)], [])
 
-    addKids ccode ((lNode, lNodes, lEdges), (rNode, rNodes, rEdges)) =
-        let i = circuitHash ccode
-        in return (i, (i, frz ccode) : lNodes ++ rNodes,
-                      (lNode, i, frz ccode) : (rNode, i, frz ccode) : lEdges ++ rEdges)
+    addKids ccode (a,b) = addAllKids ccode [a,b]
+
+    addAllKids ccode stuff = return $
+        let (node, nodes, edges) = unzip3 stuff
+            hash = circuitHash ccode
+            frzc = frz ccode
+            edges' = [ (n, hash, frzc) | n <- node]
+            node' = (hash, frzc)
+        in (hash, node' : concat nodes, edges' ++ concat edges)
+
     tupM2 f (x, y) = liftM2 (,) (f x) (f y)
     frz ccode = FrozenShared ccode cmaps
     extract code f = do
@@ -1447,8 +1506,9 @@ shareGraph' (FrozenShared output cmaps) =
     go c@(CEq i) = extract i eqMap >>= tupM2 go >>= addKids c
     go c@(CLt i) = extract i ltMap >>= tupM2 go >>= addKids c
     go c@(CNat i) = return (i, [(i, frz c)], [])
-    go c@(CExist i) = return (i, [(i, frz c)], [])
-    go c@(COne i) = extract i oneMap >>= mapM go >>= addKidsOne i
+    go c@(CExistBool i) = return (i, [(i, frz c)], [])
+    go c@(CExistNat  i) = return (i, [(i, frz c)], [])
+    go (COne i) = extract i oneMap >>= mapM go >>= addKidsOne i
 
     addKids ccode ((lNode, lNodes, lEdges), (rNode, rNodes, rEdges)) =
         let i = circuitHash ccode
@@ -1479,7 +1539,8 @@ shareGraph' (FrozenShared output cmaps) =
     frz CEq{} = "=="
     frz CLt{} = "<"
     frz COne{} = "ONE"
-    frz (CExist i) = "v" ++ show i ++ "?"
+    frz (CExistBool i) = "v" ++ show i ++ "? (b)"
+    frz (CExistNat  i) = "v" ++ show i ++ "? (n)"
 
     extract code f = do
         maps <- ask
@@ -1494,13 +1555,16 @@ removeExist (FrozenShared code maps) = go code
   where
   -- dumb (for playing): remove existentials by replacing them with their assigned value (if any)
   existAssigs = Map.fromList $
-                [ (f, val)| (f@CExist{}, val) <- Bimap.elems(iffMap maps)] ++
-                [ (f, val)| (val, f@CExist{}) <- Bimap.elems(iffMap maps)]
+                [ (f, val)| (f@CExistBool{}, val) <- Bimap.elems(iffMap maps)] ++
+                [ (f, val)| (f@CExistNat{} , val) <- Bimap.elems(iffMap maps)] ++
+                [ (f, val)| (val, f@CExistBool{}) <- Bimap.elems(iffMap maps)] ++
+                [ (f, val)| (val, f@CExistNat{} ) <- Bimap.elems(iffMap maps)]
 
   go (CTrue{})  = true
   go (CFalse{}) = false
   go c@(CVar{}) = input $ getChildren' c (varMap maps)
-  go c@CExist{} = go $ Map.findWithDefault (error "removeExist: CExist") c existAssigs
+  go c@CExistBool{} = go $ Map.findWithDefault (error "removeExist: CExistBool") c existAssigs
+  go c@CExistNat{}  = go $ Map.findWithDefault (error "removeExist: CExistNat") c existAssigs
   go c@(COr{})  = uncurry or  (go `onTup` getChildren c (orMap  maps))
   go c@(CAnd{}) = uncurry and (go `onTup` getChildren c (andMap maps))
   go c@(CNot{}) = not . go $ getChildren c (notMap maps)
@@ -1537,17 +1601,20 @@ removeComplex freshVars c = assert disjoint $ (go code, bitnats)
 
   -- dumb (for playing): remove existentials by replacing them with their assigned value (if any)
   existAssigs = Map.fromList $
-                [ (f, val)| (f@CExist{}, val) <- Bimap.elems(iffMap maps)] ++
-                [ (f, val)| (val, f@CExist{}) <- Bimap.elems(iffMap maps)]
+                [ (f, val)| (f@CExistBool{}, val) <- Bimap.elems(iffMap maps)] ++
+                [ (f, val)| (f@CExistNat{} , val) <- Bimap.elems(iffMap maps)] ++
+                [ (f, val)| (val, f@CExistBool{}) <- Bimap.elems(iffMap maps)] ++
+                [ (f, val)| (val, f@CExistNat{} ) <- Bimap.elems(iffMap maps)]
 
   go (CTrue{})  = true
   go (CFalse{}) = false
   go c@(CVar{}) = input $ getChildren' c (varMap maps)
-  go c@CExist{} = go $ Map.findWithDefault (error "removeComplex: CExist") c existAssigs
+  go c@CExistBool{} = go $ Map.findWithDefault (error "removeComplex: CExistBool") c existAssigs
+  go c@CExistNat{}  = go $ Map.findWithDefault (error "removeComplex: CExistNat") c existAssigs
   go c@(COr{})  = uncurry or (go `onTup` getChildren c (orMap maps))
   go c@(CAnd{}) = uncurry and (go `onTup` getChildren c (andMap maps))
-
   go c@(CNot{}) = not . go $ getChildren c (notMap maps)
+  go c@(COne{}) = oneDefault (map go (getChildren c (oneMap maps)))
   go c@(CXor{}) = let
       (l, r) = go `onTup` getChildren c (xorMap maps)
       in (l `or` r) `and` not (l `and` r)
@@ -1607,7 +1674,7 @@ removeComplex freshVars c = assert disjoint $ (go code, bitnats)
 --    -----------------------
 
 -- this data is private to toCNF.
-data CNFResult = CP !Lit [Set Lit]
+
 data CNFState = CNFS{ toCnfVars :: !([Var])
                       -- ^ infinite fresh var source, starting at 1
                     , toCnfMap  :: !(Var :<->: CCode)
@@ -1623,17 +1690,7 @@ emptyCNFState = CNFS{ toCnfVars = [V 1 ..]
                     , toCnfMap = Bimap.empty
                     , toBitMap = mempty}
 
--- retrieve and create (if necessary) a cnf variable for the given ccode.
---findVar :: (MonadState CNFState m) => CCode -> m Lit
-findVar ccode = do
-    m <- gets toCnfMap
-    v:vs <- gets toCnfVars
-    case Bimap.lookupR ccode m of
-      Nothing -> do modify $ \s -> s{ toCnfMap = Bimap.insert v ccode m
-                                    , toCnfVars = vs }
-                    return . lit $ v
-      Just v'  -> return . lit $ v'
-
+-- | retrieve and create (if necessary) a cnf variable for the given ccode.
 findVar' ccode kfound knot = do
     m <- gets toCnfMap
     v:vs <- gets toCnfVars
@@ -1670,6 +1727,7 @@ toCNF' freshv = first(ECircuit.toCNF . ECircuit.runShared) . removeComplex fresh
 toCNF :: (Ord v, Hashable v, Show v, Ord term, Hashable term, Show term) =>
          FrozenShared term v -> RPOCircuitProblem term v
 toCNF c@(FrozenShared !sharedCircuit !circuitMaps) =
+    CE.assert (validCMaps circuitMaps) $
     let (m,cnf) = (\x -> execRWS x circuitMaps emptyCNFState) $ do
                      l <- toCNF' sharedCircuit
                      writeClauses [[l]]
@@ -1696,10 +1754,11 @@ toCNF c@(FrozenShared !sharedCircuit !circuitMaps) =
     -- False, and Var circuits.  We therefore remove the complex circuit before
     -- passing stuff to this function.
     toCNF' c@(CVar{})   = findVar' c goOn goOn
-    toCNF' c@CExist{}   = findVar' c goOn goOn
+    toCNF' c@CExistBool{} = findVar' c goOn goOn
+    toCNF' c@CExistNat{}  = findVar' c goOn goOn
 
-    toCNF' c@(CTrue{})  = true
-    toCNF' c@(CFalse{}) = false
+    toCNF' CTrue{}  = true
+    toCNF' CFalse{} = false
 --     -- x <-> -y
 --     --   <-> (-x, -y) & (y, x)
     toCNF' c@(CNot i) =  findVar' c goOn $ \notLit -> do
@@ -1864,6 +1923,8 @@ toCNF c@(FrozenShared !sharedCircuit !circuitMaps) =
               return bits
           Just vv -> return (map lit vv)
 
+    findNat _ = error "unreachable"
+
     goOn c = return c
 
     fresh = do
@@ -1907,8 +1968,6 @@ projectRPOCircuitSolution sol prbl = case sol of
                                Nothing    -> Auxiliar
                   Just code -> Var (circuitHash code)
 
-    safeAt l i = CE.assert (i < length l) (l !! i)
-
 data ProjectionCase = Var CircuitHash | Bit (CircuitHash, Int) | Auxiliar
 
 
@@ -1929,8 +1988,9 @@ instance Hashable Var where hash (V i) = i
 -- ----------
 -- Helpers
 -- ----------
+safeAtL :: String -> [a] -> Int -> a
 safeAtL msg [] _   = error ("safeAtL - index too large (" ++ msg ++ ")")
-safeAtL msg (x:_) 0 = x
+safeAtL _msg (x:_) 0 = x
 safeAtL msg (_:xx) i = safeAtL msg xx (pred i)
 
 selectSafe :: forall a. String -> [Int] -> [a] -> [a]
@@ -1939,19 +1999,20 @@ selectSafe msg ii xx
   | otherwise = map (safeIx (!!) xx) ii
   where
     len = length xx
-    safeIx :: forall container a . (container a -> Int -> a) -> container a -> Int -> a
-    safeIx (!!) xx i
+    safeIx :: forall container elem . (container -> Int -> elem) -> container -> Int -> elem
+    safeIx ix xx' i
         | i Prelude.> len - 1 = error ("select(" ++ msg ++ "): index too large")
         | i < 0       = error ("select(" ++ msg ++ "): negative index")
-        | otherwise = xx !! i
+        | otherwise = xx' `ix` i
 
+#ifdef TEST
 propSelect ii xx = map (xx!!) ii' == selectSafe "" ii' xx
   where _types = (xx::[Int], ii::[Int])
         ii'   = filter (< length xx) (map abs ii)
 
-
 debug = return ()
 pprTrace _ = id
+#endif
 
 -- -------
 -- Errors
@@ -1960,5 +2021,12 @@ pprTrace _ = id
 typeError :: String -> a
 typeError msg = error (msg ++ "\nPlease send an email to the pepeiborra@gmail.com requesting a typed circuit language.")
 
+assert' :: String -> Bool -> a -> a
+assert' msg cond foo =
+  unsafePerformIO (
+                   CE.assert cond (CE.evaluate foo)
+                   `CE.catch` \(AssertionFailed str) ->
+                       CE.throw (AssertionFailed (str++":\n"++msg))
+                   )
 
 on cmp f x y = f x `cmp` f y
