@@ -22,7 +22,7 @@ module Funsat.RPOCircuit.Symbols (
   lpo,  LPOsymbol(..),
   mpo,  MPOsymbol(..),
   Natural(..),
-  SymbolRes(..),
+  SymbolRes(..), mkSymbolDecoder,
   Status(..), mkStatus
   ) where
 
@@ -32,6 +32,7 @@ import           Control.Monad
 import           Control.Monad.Writer
 import           Data.Foldable                     (Foldable, foldMap)
 import           Data.List                         (transpose)
+import qualified Data.Term                         as Family
 import           Data.Typeable
 
 import           Funsat.RPOCircuit
@@ -42,6 +43,8 @@ import           Funsat.RPOCircuit.Internal
 #ifdef DEBUG
 import           Control.Monad.Identity
 #endif
+import Control.Applicative (Applicative)
+import Text.PrettyPrint.HughesPJClass (Pretty(..))
 
 -- ----------------------------
 -- Type for natural variables
@@ -61,6 +64,7 @@ data SymbolRes a = SymbolRes { theSymbolR :: a
 
 instance Functor SymbolRes where fmap f SymbolRes{..} = SymbolRes{theSymbolR = f theSymbolR, ..}
 
+instance Pretty a => Pretty (SymbolRes a) where pPrint = pPrint . theSymbolR
 
 mkSymbolDecoder :: (Ord v, Show v, Show id
                    )=> id -> Natural v -> v -> [v] -> [[v]] -> v -> EvalM v (SymbolRes id)
@@ -146,8 +150,9 @@ class Monad m => MonadCircuit m where
   assertAll :: [SomeCircuit (Var m)] -> m ()
 
 newtype CircuitM v m a = CircuitM {unCircuitM::WriterT [SomeCircuit v] m a}
-    deriving (Functor, Monad, MonadTrans)
+    deriving (Applicative, Functor, Monad, MonadTrans)
 
+runCircuitM :: (Co repr v, OneCircuit repr, ECircuit repr, Monad m) => CircuitM v m a -> m (a, repr v)
 runCircuitM = liftM (second (unC . andL)) . runWriterT . unCircuitM
 
 instance Monad m => MonadCircuit (CircuitM v m) where
@@ -166,6 +171,8 @@ data RPOSsymbol v a = Symbol { theSymbol    :: a
 
 instance Show (EvalM v a) where show _ = "evalM computation"
 
+instance Pretty a => Pretty (RPOSsymbol v a) where pPrint = pPrint . theSymbol
+
 instance Eq   a => Eq   (RPOSsymbol v a) where
     a@Symbol{} == b@Symbol{} = theSymbol a == theSymbol b
 
@@ -177,18 +184,20 @@ instance Functor (RPOSsymbol v) where
                                decodeSymbol = (fmap.fmap) f decodeSymbol, ..}
 instance Foldable (RPOSsymbol v) where foldMap f Symbol{..} = f theSymbol
 
-instance HasPrecedence v (RPOSsymbol v a) where precedence_v = encodePrec
-instance HasStatus     v (RPOSsymbol v a) where
+instance HasPrecedence (RPOSsymbol v a) where precedence_v = encodePrec
+instance HasStatus     (RPOSsymbol v a) where
     useMul_v   = encodeUseMset
     lexPerm_vv = Just . encodePerm
 
-instance HasFiltering v (RPOSsymbol v a) where
+instance HasFiltering (RPOSsymbol v a) where
     listAF_v   = encodeAFlist
     filtering_vv = encodeAFpos
 
 rpos :: SymbolFactory RPOSsymbol
 rpos b n = runCircuitM . rposM b n
 
+rposM :: (MonadCircuit (t m), MonadTrans t, Show (Var (t m)), Show a, Ord (Var (t m)), Monad m) =>
+         m (Var (t m)) -> m (Natural (Var (t m))) -> (a, Int) -> t m (RPOSsymbol (Var (t m)) a)
 rposM booleanm naturalm (x, ar) = do
   n_b      <- natural
   perm_bb  <- replicateM ar (replicateM ar boolean)
@@ -236,6 +245,21 @@ rposM booleanm naturalm (x, ar) = do
     boolean = lift booleanm
     natural = lift naturalm
 
+-- ----------------------
+-- Term family membership
+-- ----------------------
+type instance Family.Var (RPOSsymbol  v id) = v
+type instance Family.Var (RPOsymbol   v id) = v
+type instance Family.Var (LPOSsymbol  v id) = v
+type instance Family.Var (LPOsymbol   v id) = v
+type instance Family.Var (MPOsymbol   v id) = v
+
+type instance Family.Id (RPOSsymbol  v id) = id
+type instance Family.Id (RPOsymbol   v id) = id
+type instance Family.Id (LPOSsymbol  v id) = id
+type instance Family.Id (LPOsymbol   v id) = id
+type instance Family.Id (MPOsymbol   v id) = id
+
 -- --------
 -- Variants
 -- --------
@@ -243,8 +267,8 @@ rposM booleanm naturalm (x, ar) = do
 -- LPO with status
 
 newtype LPOSsymbol v a = LPOS{unLPOS::RPOSsymbol v a}
-    deriving (Eq, Ord, Show
-             ,HasPrecedence v, HasStatus v, HasFiltering v
+    deriving (Eq, Ord, Show, Pretty
+             ,HasPrecedence, HasStatus, HasFiltering
              ,Functor, Foldable)
 
 lpos :: SymbolFactory LPOSsymbol
@@ -257,13 +281,10 @@ lposM boolean natural x = do
 -- LPO
 
 newtype LPOsymbol v a = LPO{unLPO::RPOSsymbol v a}
-    deriving (Eq, Ord, Show
-             ,HasPrecedence v, HasFiltering v
+    deriving (Eq, Ord, Show, Pretty
+             ,HasPrecedence, HasFiltering
              ,Functor, Foldable)
 
-removePerm :: SymbolRes a -> SymbolRes a
-removePerm symbolRes@SymbolRes{status=Lex _} = symbolRes{status = Lex Nothing}
-removePerm symbolRes = symbolRes
 
 lpo :: SymbolFactory LPOsymbol
 lpo b n x = runCircuitM $ do
@@ -271,14 +292,14 @@ lpo b n x = runCircuitM $ do
   assertAll [C.not $ useMul s]
   return (LPO s)
 
-instance (Ord v, Show v) => HasStatus v (LPOsymbol v a) where
+instance () => HasStatus (LPOsymbol v a) where
     useMul_v     = encodeUseMset . unLPO
     lexPerm_vv _ = Nothing
 
 -- MPO
 newtype MPOsymbol v a = MPO{unMPO::RPOSsymbol v a}
-    deriving (Eq, Ord, Show
-             ,HasPrecedence v, HasStatus v, HasFiltering v
+    deriving (Eq, Ord, Show, Pretty
+             ,HasPrecedence, HasStatus, HasFiltering
              ,Functor, Foldable)
 
 mpo :: SymbolFactory MPOsymbol
@@ -289,8 +310,8 @@ mpo b n x = runCircuitM $ do
 
 -- RPO
 newtype RPOsymbol v a = RPO{unRPO::RPOSsymbol v a}
-    deriving (Eq, Ord, Show
-             ,HasPrecedence v, HasStatus v, HasFiltering v
+    deriving (Eq, Ord, Show, Pretty
+             ,HasPrecedence, HasStatus, HasFiltering
              ,Functor, Foldable)
 
 rpo :: SymbolFactory RPOsymbol

@@ -10,13 +10,14 @@
 {-# LANGUAGE EmptyDataDecls #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
 {-# LANGUAGE CPP #-}
-{- LANGUAGE NoMonoLocalBinds #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
 {-| Extension of Funsat.Circuit to generate RPO constraints as boolean circuits
 
@@ -31,7 +32,7 @@ module Funsat.RPOCircuit
    -- ** The language extension for an efficient only-one-true predicate
    ,OneCircuit(..), oneDefault, oneExist
    -- ** The language extension for asserting a fact
-   ,AssertCircuit(..)
+   ,AssertCircuit(..), assertCircuits
    -- * Type classes for RPO identifiers
    ,HasPrecedence(..), precedence
    ,HasFiltering(..), listAF, inAF
@@ -46,14 +47,15 @@ module Funsat.RPOCircuit
    ,Tree(..), TreeF(..), simplifyTree, printTree, mapTreeTerms, typeCheckTree, collectIdsTree, CircuitType(..)
    ,tOpen, tTrue, tFalse, tNot, tOne, tAnd, tOr, tXor, tIff, tOnlyIf, tEq, tLt, tIte, tTermGt, tTermEq
    -- ** An evaluator
-   ,WrapEval(..)
+   ,WrapEval(..), unwrapEval
    -- * Tools
    ,RPOCircuitProblem(..)
    ,removeComplex, removeExist
    ,toCNF, toCNF'
    ,projectRPOCircuitSolution
    ,reconstructNatsFromBits
-   ) where
+   )
+ where
 
 {-
     This file is heavily based on parts of funsat.
@@ -89,7 +91,7 @@ import Data.Bitraversable ( Bitraversable (bitraverse), bimapDefault, bifoldMapD
 import Data.Bimap( Bimap )
 import Data.Foldable (Foldable)
 import Data.List( nub,  sortBy)
-import Data.List.Split (chunk)
+import Data.List.Split (chunksOf)
 import Data.Maybe( fromJust )
 import Data.Hashable
 import Data.Monoid (Monoid(..))
@@ -139,6 +141,10 @@ class Circuit repr => OneCircuit repr where
 class Circuit repr => AssertCircuit repr where
   assertCircuit :: repr a -> repr a -> repr a
 
+assertCircuits :: AssertCircuit repr => [repr a] -> repr a -> repr a
+assertCircuits [] e = e
+assertCircuits (a:aa) e = assertCircuit a $ assertCircuits aa e
+
 oneExist :: (ECircuit repr, ExistCircuit repr, Co repr v) => [repr v] -> repr v
 oneExist [] = false
 oneExist vv = (`runCont` id) $ do
@@ -162,60 +168,63 @@ oneDefault (v:vv) = (v `and` none vv) `or` (not v `and` oneDefault vv)
   where
    none = foldr and true . map not
 
-class Circuit repr => RPOCircuit repr term | repr -> term where
-    type CoRPO_ repr term v :: Constraint
-    termGt, termGe, termEq :: (--termF ~ Family.TermFM repr
-                              --,var   ~ Family.VarM repr
-                              --,id    ~ Family.Id1 repr
-                              --,id    ~ Family.Id1 termF
-                              --Foldable termF, HasId termF
---                            ,HasPrecedence v id, HasFiltering v id, HasStatus v id
-                              CoRPO repr term v
+class HasPrecedence a where precedence_v  :: a ->  Family.Var a
+class HasFiltering  a where listAF_v      :: a ->  Family.Var a
+                            filtering_vv  :: a -> [Family.Var a]
+class HasStatus id    where useMul_v      :: id -> Family.Var id
+                            lexPerm_vv    :: id -> Maybe [[Family.Var id]]
+
+class Circuit repr => RPOCircuit repr where
+    type CoRPO_ repr (termF :: * -> *) v' v :: Constraint
+    termGt, termGe, termEq :: (termF ~ Family.TermF repr
+                              ,id    ~ Family.Id termF
+                              ,v     ~ Family.Var id
+                              ,Foldable termF, HasId termF
+                              ,Eq (Term termF v')
+                              ,HasPrecedence id, HasFiltering id, HasStatus id
+                              ,CoRPO repr termF v' v
                               ) =>
-                              term -> term -> repr v
+                              Term termF v' -> Term termF v' -> repr v
 --    termGe s t | pprTrace (text "termGe" <+> pPrint s <+> pPrint t) False = undefined
     termGe s t = termGt s t `or` termEq s t
 
-type CoRPO repr term v = (Co repr v, CoRPO_ repr term v)
+type CoRPO repr term tv v = (Co repr v, CoRPO_ repr term tv v)
 
-class RPOCircuit repr term => RPOExtCircuit repr term where
-    exGt, exGe, exEq :: (--termF ~ Family.TermFM repr
-                        --,var   ~ Family.VarM repr
-                        -- id    ~ Family.Id1 repr
-                         HasPrecedence v (Family.Id term), HasFiltering v (Family.Id term), HasStatus v (Family.Id term)
-                        ,CoRPO repr term v) =>
-                        Family.Id term -> Family.Id term -> [term] -> [term] -> repr v
+class (RPOCircuit repr,HasPrecedence id, HasFiltering id, HasStatus id) =>
+      RPOExtCircuit repr id where
+    exGt, exGe, exEq :: (id ~ Family.Id termF
+                        ,v  ~ Family.Var id
+                        ,termF ~ Family.TermF repr
+                        ,Eq (Term termF v')
+                        ,Foldable termF, HasId termF
+                        ,CoRPO repr termF v' v
+                        ) =>
+                        id -> id -> [Term termF v'] -> [Term termF v'] -> repr v
     exGe id_s id_t ss tt = exGt id_s id_t ss tt `or` exEq id_s id_t ss tt
 
-class HasPrecedence v a | a -> v where precedence_v  :: a -> v
-class HasFiltering  v a | a -> v where listAF_v      :: a -> v
-                                       filtering_vv  :: a -> [v]
-class HasStatus v id | id -> v   where useMul_v      :: id -> v
-                                       lexPerm_vv    :: id -> Maybe [[v]]
-
-precedence :: (NatCircuit repr, HasPrecedence v id, Co repr v) => id -> repr v
+precedence :: (NatCircuit repr, HasPrecedence id, Co repr v, v ~ Family.Var id) => id -> repr v
 precedence = nat . precedence_v
-listAF :: (Circuit repr, HasFiltering v id, Co repr v) => id -> repr v
+listAF :: (Circuit repr, HasFiltering id, Co repr v, v ~ Family.Var id) => id -> repr v
 listAF     = input . listAF_v
 {- INLINE inAF -}
-inAF   :: (Circuit repr, HasFiltering v id, Co repr v) => Int -> id -> repr v
+inAF   :: (Circuit repr, HasFiltering id, Co repr v, v ~ Family.Var id) => Int -> id -> repr v
 inAF i     = input . (!! pred i) . filtering_vv
-useMul :: (Circuit repr, HasStatus v id, Co repr v) => id -> repr v
+useMul :: (Circuit repr, HasStatus id, Co repr v, v ~ Family.Var id) => id -> repr v
 useMul     = input . useMul_v
-lexPerm :: (Circuit repr, HasStatus v id, Co repr v) => id -> Maybe [[repr v]]
+lexPerm :: (Circuit repr, HasStatus id, Co repr v, v ~ Family.Var id) => id -> Maybe [[repr v]]
 lexPerm    = (fmap.fmap.fmap) input . lexPerm_vv
 
 termGt_, termEq_, termGe_ ::
-        (HasId termf, Foldable termf
-        ,HasStatus var id, HasPrecedence var id, HasFiltering var id
+        (var   ~ Family.Var id
+        ,termf ~ Family.TermF repr
+        ,id    ~ Family.Id termf
+        ,Eq var', Eq(termf(Free termf var'))
+        ,HasId termf, Foldable termf
         ,ECircuit repr, NatCircuit repr
-        ,RPOExtCircuit repr (Term termf tvar)
-        ,CoRPO repr (Term termf tvar) var
-        ,Eq(Term termf tvar)
-        ,Eq tvar
-        ,id ~ Id1 termf
+        ,RPOCircuit repr, RPOExtCircuit repr id
+        ,CoRPO repr termf var' var
         ) =>
-        Term termf tvar -> Term termf tvar -> repr var
+        Term termf var' -> Term termf var' -> repr var
 
 termGt_ s t
 --    | pprTrace (text "termGt_" <+> pPrint s <+> pPrint t) False = undefined
@@ -338,9 +347,9 @@ termEq_ s t
 
 
 -- instance (CastCircuit Circuit.Tree c
---          ,tvar ~ Family.VarM c
---          ,tid  ~ Family.Id1 c
---          ,HasPrecedence v tid, HasFiltering v tid, HasStatus v tid
+--          ,tvar ~ Family.Var c
+--          ,tid  ~ Family.Id c
+--          ,HasPrecedence tid, HasFiltering tid, HasStatus tid
 --          ,Ord v, Hashable v, Show v
 --          ,Hashable tid, Ord tid
 --          ,Hashable tvar, Ord tvar, Show tvar, Pretty tvar)
@@ -349,9 +358,9 @@ termEq_ s t
 --       castCircuit = castCircuit
 
 -- instance (CastCircuit ECircuit.Tree c
---          ,tid  ~ Family.Id1 c
---          ,tvar ~ Family.VarM c
---          ,HasPrecedence v tid, HasFiltering v tid, HasStatus v tid
+--          ,tid  ~ Family.Id c
+--          ,tvar ~ Family.Var c
+--          ,HasPrecedence tid, HasFiltering tid, HasStatus tid
 --          ,Ord v, Hashable v, Show v
 --          ,Hashable tid, Ord tid
 --          ,Hashable tvar, Ord tvar, Show tvar, Pretty tvar)
@@ -361,27 +370,27 @@ termEq_ s t
 
 -- | A `Circuit' constructed using common-subexpression elimination.  This is a
 -- compact representation that facilitates converting to CNF.  See `runShared'.
-newtype Shared term v = Shared { unShared :: Lazy.State (CMaps term v) CCode }
+newtype Shared term tv v = Shared { unShared :: Lazy.State (CMaps term tv v) CCode }
 
-type instance Family.Id1    (Shared term) = Family.Id term
-type instance Family.TermFM (Shared term) = Family.TermF term
-type instance Family.VarM   (Shared term) = Family.Var term
+type instance Family.Id    (Shared term tv) = Family.Id term
+type instance Family.TermF (Shared term tv) = Family.TermF term
+type instance Family.Var   (Shared term tv) = tv
 
 -- | A shared circuit that has already been constructed.
-data FrozenShared term v = FrozenShared !CCode !(CMaps term v) deriving Eq
+data FrozenShared term tv v = FrozenShared !CCode !(CMaps term tv v) deriving Eq
 
 frozenShared code maps = FrozenShared code maps
 
 
-instance (Hashable term, Show term, Show v) => Show (FrozenShared term v) where
+instance (Hashable(term tv), Show(term tv), Show v) => Show (FrozenShared term tv v) where
   showsPrec p (FrozenShared c maps) = ("FrozenShared " ++) . showsPrec p c . showsPrec p maps{hashCount=[]}
 
 
 -- | Reify a sharing circuit.
-runShared :: (Hashable term, Ord term) => Shared term v -> FrozenShared term v
+runShared :: (Hashable (term tv), Ord (term tv)) => Shared term tv v -> FrozenShared term tv v
 runShared = runShared' emptyCMaps
 
-runShared' :: (Hashable term, Ord term) => CMaps term v -> Shared term v -> FrozenShared term v
+runShared' :: (Hashable (term tv), Ord (term tv)) => CMaps term tv v -> Shared term tv v -> FrozenShared term tv v
 runShared' _ = uncurry frozenShared . (`Lazy.runState` emptyCMaps) . unShared
 
 getChildren :: (Ord v, Hashable v) => CCode -> CircuitHash :<->: v -> v
@@ -398,12 +407,12 @@ getChildren' code codeMap =
       Just c  -> c
   where findError = error $ "getChildren: unknown code: " ++ show code
 
-instance (Hashable term, Ord term, ECircuit c, NatCircuit c, ExistCircuit c) => CastCircuit (Shared term) c where
-    type CastCo (Shared term) c var = Co c var
+instance (ECircuit c, NatCircuit c, ExistCircuit c) => CastCircuit (Shared term tv) c where
+    type CastCo (Shared term tv) c var = (Co c var,Hashable(term tv), Ord(term tv))
     castCircuit = castCircuit . runShared
 
-instance (ECircuit c, NatCircuit c, ExistCircuit c) => CastCircuit (FrozenShared term) c where
-    type CastCo (FrozenShared term) c var = Co c var
+instance (ECircuit c, NatCircuit c, ExistCircuit c) => CastCircuit (FrozenShared term tv) c where
+    type CastCo (FrozenShared term tv) c var = Co c var
     castCircuit (FrozenShared code maps) = runCont (go code) id
       where
         go (CTrue{})     = return true
@@ -451,11 +460,11 @@ data CCode    = CTrue   { circuitHash :: !CircuitHash }
               | CExistNat   { circuitHash :: !CircuitHash }
              deriving (Eq, Ord, Show, Read)
 
-instance Hashable CCode where hash = circuitHash
+instance Hashable CCode where hashWithSalt _salt = circuitHash 
 
 -- | Maps used to implement the common-subexpression sharing implementation of
 -- the `Circuit' class.  See `Shared'.
-data CMaps term v = CMaps
+data CMaps term tv v = CMaps
     { hashCount :: ![CircuitHash]
     -- ^ Source of unique IDs used in `Shared' circuit generation.  Should not
     -- include 0 or 1.
@@ -474,15 +483,15 @@ data CMaps term v = CMaps
     , eqMap     :: !(CircuitHash :<->: (CCode, CCode))
     , ltMap     :: !(CircuitHash :<->: (CCode, CCode))
     , oneMap    :: !(CircuitHash :<->: [CCode])
-    , termGtMap :: !((term,term) :->: CCode)
-    , termGeMap :: !((term,term) :->: CCode)
-    , termEqMap :: !((term,term) :->: CCode)
+    , termGtMap :: !((term tv,term tv) :->: CCode)
+    , termGeMap :: !((term tv,term tv) :->: CCode)
+    , termEqMap :: !((term tv,term tv) :->: CCode)
     }
 
-deriving instance (Hashable term, Show term, Show v) => Show (CMaps term v)
-deriving instance (Hashable term, Eq term, Eq v) => Eq (CMaps term v)
+deriving instance (Hashable (term tv), Show (term tv), Show v) => Show (CMaps term tv v)
+deriving instance (Hashable (term tv), Eq (term tv), Eq v) => Eq (CMaps term tv v)
 
-validCMaps :: forall term v . Ord v => CMaps term v -> Bool
+validCMaps :: forall term tv v . Ord v => CMaps term tv v -> Bool
 validCMaps cmaps =
     Prelude.and
         [ validBimap2 andMap
@@ -497,7 +506,7 @@ validCMaps cmaps =
         , validBimapList oneMap
         ]
     where
-      exists :: (Ord a, Ord k) => k -> (CMaps term v -> k :<->: a) -> Bool
+      exists :: (Ord a, Ord k) => k -> (CMaps term tv v -> k :<->: a) -> Bool
       exists h m = Bimap.member h (m cmaps)
       valid (CTrue _)  = True
       valid (CFalse _) = True
@@ -516,7 +525,7 @@ validCMaps cmaps =
       valid (CExistBool _) = True
       valid (CExistNat _) = True
 
-      bimapKeysPred :: forall k a . (a -> Bool) -> (CMaps term v -> k :<->: a) -> Bool
+      bimapKeysPred :: forall k a . (a -> Bool) -> (CMaps term tv v -> k :<->: a) -> Bool
       bimapKeysPred p = all p . Bimap.keysR . ($ cmaps)
       validBimap1    = bimapKeysPred valid
       validBimap2    = bimapKeysPred (\(h1,h2) -> valid h1 && valid h2)
@@ -524,7 +533,7 @@ validCMaps cmaps =
       validBimapList = bimapKeysPred (all valid)
 
 -- | A `CMaps' with an initial `hashCount' of 2.
-emptyCMaps :: (Hashable term, Ord term) => CMaps term v
+emptyCMaps :: (Hashable (term tv), Ord (term tv)) => CMaps term tv v
 emptyCMaps = CMaps
     { hashCount = [2 ..]
     , varMap    = Bimap.empty
@@ -550,10 +559,10 @@ emptyCMaps = CMaps
 {-# INLINE recordC #-}
 recordC :: (Ord a, Hashable a) =>
            (CircuitHash -> b)
-        -> (CMaps term v -> Int :<->: a)                 -- ^ prj
-        -> (CMaps term v -> Int :<->: a -> CMaps term v) -- ^ upd
+        -> (CMaps term tv v -> Int :<->: a)                 -- ^ prj
+        -> (CMaps term tv v -> Int :<->: a -> CMaps term tv v) -- ^ upd
         -> a
-        -> Lazy.State (CMaps term v) b
+        -> Lazy.State (CMaps term tv v) b
 recordC _ _ _ x | x `seq` False = undefined
 recordC cons prj upd x = do
   s <- get
@@ -568,10 +577,10 @@ recordC cons prj upd x = do
 {-# INLINE recordC' #-}
 recordC' :: Ord a =>
            (CircuitHash -> b)
-        -> (CMaps term v -> Bimap Int a)                 -- ^ prj
-        -> (CMaps term v -> Bimap Int a -> CMaps term v) -- ^ upd
+        -> (CMaps term tv v -> Bimap Int a)                 -- ^ prj
+        -> (CMaps term tv v -> Bimap Int a -> CMaps term tv v) -- ^ upd
         -> a
-        -> Lazy.State (CMaps term v) b
+        -> Lazy.State (CMaps term tv v) b
 recordC' _ _ _ x | x `seq` False = undefined
 recordC' cons prj upd x = do
   s <- get
@@ -584,8 +593,8 @@ recordC' cons prj upd x = do
         (return . cons) $ Bimap.lookupR x (prj s)
 
 
-instance Circuit (Shared term) where
-    type Co (Shared term) var = Ord var
+instance Circuit (Shared term tv) where
+    type Co (Shared term tv) var = Ord var
     false = Shared falseS
     true  = Shared trueS
     input v = Shared $ recordC' CVar varMap (\s e -> s{ varMap = e }) v
@@ -605,7 +614,7 @@ instance Circuit (Shared term) where
     not = liftShared notS
 
 
-instance ExistCircuit (Shared term) where
+instance ExistCircuit (Shared term tv) where
     existsBool k  = Shared $ do
         c:cs <- gets hashCount
         modify $ \s -> s{freshSet = Set.insert c (freshSet s), hashCount=cs}
@@ -615,7 +624,7 @@ instance ExistCircuit (Shared term) where
         modify $ \s -> s{freshSet = Set.insert c (freshSet s), hashCount=cs}
         unShared . k . Shared . return . CExistNat $ c
 
-instance ECircuit (Shared term) where
+instance ECircuit (Shared term tv) where
     xor = liftShared2 xor_ where
         xor_ CTrue{} c = notS c
         xor_ c CTrue{} = notS c
@@ -640,7 +649,7 @@ instance ECircuit (Shared term) where
         ite_ CFalse{} _ he = return he
         ite_ hx ht he = recordC CIte iteMap (\s e' -> s{ iteMap = e' }) (hx, ht, he)
 
-falseS, trueS :: Lazy.State (CMaps term v) CCode
+falseS, trueS :: Lazy.State (CMaps term tv v) CCode
 falseS = return $ CFalse falseHash
 trueS  = return $ CTrue trueHash
 
@@ -665,12 +674,12 @@ liftShared2 f a b = Shared $ do
   vb <- unShared b
   f va vb
 
-instance OneCircuit (Shared term) where
+instance OneCircuit (Shared term tv) where
     one ss = Shared $ do
                xx <- sequence $ map unShared ss
                if null xx then falseS else recordC COne oneMap (\s e' -> s{oneMap = e'}) xx
 
-instance NatCircuit (Shared term) where
+instance NatCircuit (Shared term tv) where
     eq xx yy = Shared $ do
                  x <- unShared xx
                  y <- unShared yy
@@ -683,23 +692,18 @@ instance NatCircuit (Shared term) where
 
     nat = Shared . recordC' CNat natMap (\s e -> s{ natMap = e })
 
-instance ( RPOExtCircuit (Shared (Term termF var)) (Term termF var)
-         ) => RPOCircuit (Shared (Term termF var)) (Term termF var) where
- type CoRPO_ (Shared (Term termF var)) (Term termF var) v =
-     (Eq var, Ord var
-     ,HasId termF, Foldable termF
-     ,Eq(Term termF var), Ord (Term termF var), Hashable(Term termF var)
-     ,HasStatus v (Id1 termF), HasFiltering v (Id1 termF), HasPrecedence v (Id1 termF)
-     )
-
+instance ( RPOExtCircuit (Shared (Term termF) tv) (Family.Id termF)
+         ) => RPOCircuit (Shared (Term termF) tv)  where
+ type CoRPO_ (Shared (Term termF) tv) termF v' v =
+   (Hashable(Term termF tv), Ord(termF(Term termF tv)), Ord tv, tv ~ v')
  termGt s t = Shared $ do
       env <- get
       case HashMap.lookup (s,t) (termGtMap env) of
-         Just v  -> return v
-         Nothing -> do
-           me <- unShared $ termGt_ s t
-           modify $ \env -> env{termGtMap = HashMap.insert (s,t) me (termGtMap env)}
-           return me
+        Just v -> return v
+        Nothing -> do
+          me <- unShared $ termGt_ s t
+          modify $ \env' -> env' {termGtMap = HashMap.insert (s,t) me (termGtMap env)}
+          return me
  termEq s t = Shared $ do
       env <- get
       case (HashMap.lookup (s,t) (termEqMap env)) of
@@ -760,6 +764,10 @@ data Tree term v = TNat v
                  | TLeaf v
                  | TFix {tfix :: TreeF term (Tree term v)}
   deriving (Eq, Ord, Show, Functor, Foldable, Traversable)
+
+type instance Family.TermF (Tree term) = Family.TermF term
+type instance Family.Id (Tree term) = Family.Id term
+type instance Family.Var (Tree term) = Family.Var term
 
 instance Bifunctor Tree where bimap = bimapDefault
 instance Bifoldable Tree where bifoldMap = bifoldMapDefault
@@ -845,7 +853,7 @@ printTree p t = foldTree fn fl f t p where
 
 pP prec myPrec doc = if myPrec Prelude.> prec then doc else parens doc
 
-collectIdsTree :: (Functor t, Foldable t, HasId t) => Tree (Term t v) a -> Set (Id1 t)
+collectIdsTree :: (Functor t, Foldable t, HasId t) => Tree (Term t v) a -> Set (Id t)
 collectIdsTree = foldTree (const mempty) (const mempty) f
   where
    f (TNot t1)       = t1
@@ -951,11 +959,21 @@ simplifyTree = foldTree TNat TLeaf f where
   f t@TTermGt{} = tClose t
 
 
-instance (ECircuit c, NatCircuit c, OneCircuit c, RPOCircuit c term
+instance (ECircuit c, NatCircuit c, OneCircuit c, RPOCircuit c
          ) =>
   CastCircuit (Tree term) c
  where
-  type CastCo (Tree term) c v = CoRPO c term v
+  type CastCo (Tree term) c v = ( CoRPO c (TermF term) (Family.Var term) v
+                                , term ~ Term (TermF c) v
+                                , v    ~ Family.Var c
+                                , v    ~ Family.Var (Id(TermF term))
+                                , Foldable (TermF term)
+                                , HasId (TermF term)
+                                , Eq term
+                                , HasPrecedence (Id (TermF term))
+                                , HasFiltering (Id (TermF term))
+                                , HasStatus (Id (TermF term))
+                                )
   castCircuit (TFix TTrue) = true
   castCircuit (TFix TFalse) = false
   castCircuit (TFix (TAnd t1 t2)) = and (castCircuit t1) (castCircuit t2)
@@ -1012,8 +1030,8 @@ instance NatCircuit (Tree term) where
 instance OneCircuit (Tree term) where
     one   = tOne
 
-instance RPOCircuit (Tree term) term where
-    type CoRPO_ (Tree term) term v = ()
+instance RPOCircuit (Tree term) where
+    type CoRPO_ (Tree term) termF tv v = (term ~ Term termF tv)
     termGt = tTermGt
     termEq = tTermEq
 
@@ -1026,23 +1044,17 @@ instance OneCircuit Eval where
                                         (_:[]) -> True
                                         _      -> False)
 
-instance RPOCircuit Eval (Term termF var) where
-  type CoRPO_ Eval (Term termF var) v =
+instance RPOCircuit Eval  where
+  type CoRPO_ Eval termF tv v =
       ( Hashable v
-      , Eq (Term termF var)
+      , Eq (Term termF tv)
       , Foldable termF, HasId termF
-      , HasStatus v (Id1 termF), HasFiltering v (Id1 termF), HasPrecedence v (Id1 termF)
-      , Pretty (Id1 termF), Show (Id1 termF)
+      , HasStatus (Id termF), HasFiltering (Id termF), HasPrecedence (Id termF)
+      , Pretty (Id termF), Show (Id termF)
       )
 
-  termGt t u = unFlip (Right `liftM` (>) evalRPO t u)
-  termEq t u = unFlip (Right `liftM` (~~) evalRPO t u)
-
-newtype WrapEval term v = WrapEval { unwrap :: Eval v}
-wrap1 f = WrapEval . f . unwrap
-wrap2 f x y = WrapEval $ f (unwrap x) (unwrap y)
-wrap3 f x y z = WrapEval $ f (unwrap x) (unwrap y) (unwrap z)
-wrapL f = WrapEval . f . map unwrap
+  termGt t u = unEvalM (Right `liftM` (>) evalRPO t u)
+  termEq t u = unEvalM (Right `liftM` (~~) evalRPO t u)
 
 instance Circuit (WrapEval term) where
    type Co (WrapEval term) v = Co Eval v
@@ -1067,28 +1079,29 @@ instance ECircuit (WrapEval term) where
    onlyif = wrap2 onlyif
    xor = wrap2 xor
 
-instance RPOCircuit (WrapEval (Term termF var)) (Term termF var) where
-   type CoRPO_ (WrapEval (Term termF var)) (Term termF var) v =
-       ( Eq var
+instance RPOCircuit (WrapEval (Term termF var))  where
+   type CoRPO_ (WrapEval (Term termF var)) termF tv v =
+       ( var ~ tv
+       , Eq var
        , Eq (Term termF var)
        , Foldable termF, HasId termF
-       , HasStatus v (Id1 termF), HasFiltering v (Id1 termF), HasPrecedence v (Id1 termF)
-       , Pretty (Id1 termF), Show (Id1 termF)
+       , HasStatus (Id termF), HasFiltering (Id termF), HasPrecedence (Id termF)
+       , Pretty (Id termF), Show (Id termF)
        , Hashable v
        )
-   termGt t u = WrapEval $ unFlip (Right `liftM` (>)  evalRPO t u)
-   termEq t u = WrapEval $ unFlip (Right `liftM` (~~) evalRPO t u)
+   termGt t u = WrapEval $ unEvalM (Right `liftM` (>)  evalRPO t u)
+   termEq t u = WrapEval $ unEvalM (Right `liftM` (~~) evalRPO t u)
 
-
-data RPOEval a v = RPO {(>), (>~), (~~) :: a -> a -> Flip EvalF v Bool}
+data RPOEval a v = RPO {(>), (>~), (~~) :: a -> a -> EvalM v Bool}
 
 evalRPO :: forall termF id v var.
-           (HasPrecedence v id, HasStatus v id, HasFiltering v id
+           (HasPrecedence id, HasStatus id, HasFiltering id
            ,Ord v, Hashable v, Show v
            ,Pretty id, Show id
            ,Eq(Term termF var)
            ,Foldable termF, HasId termF
-           ,id ~ Id1 termF
+           ,id ~ Id termF
+           ,v  ~ Family.Var id
            ) => RPOEval (Term termF var) v
 evalRPO = RPO{..} where
 
@@ -1169,7 +1182,7 @@ evalRPO = RPO{..} where
 
    | otherwise = return False
 
-  exgt, exeq :: Term termF var -> Term termF var -> Flip EvalF v Bool
+  exgt, exeq :: Term termF var -> Term termF var -> EvalM v Bool
   exgt s t
    | Just id_t <- rootSymbol t, tt <- directSubterms t
    , Just id_s <- rootSymbol s, ss <- directSubterms s = do
@@ -1377,8 +1390,8 @@ instance OneCircuit (Graph term) where
           edges' = [(n, me, EVoid) | n <- tips ] ++ concat edges
       return (me, nodes', edges')
 
-instance Pretty term => RPOCircuit (Graph term) term where
-    type CoRPO_ (Graph term) term v = ()
+instance Pretty term => RPOCircuit (Graph term)  where
+    type CoRPO_ (Graph term) termF tv v = (Pretty (Term termF tv))
     termGt t u = Graph $ do
                    n <- newNode
                    let me = (n, NTermGt (show$ pPrint t) (show$ pPrint u))
@@ -1421,9 +1434,9 @@ dotGraph g = graphToDot g defaultNodeAnnotate defaultEdgeAnnotate
 -- circuits.
 shareGraph :: ( G.DynGraph gr
               , Eq v, Hashable v, Show v
-              , Eq term, Hashable term
+              , Eq (term tv), Hashable (term tv)
               ) =>
-              FrozenShared term v -> gr (FrozenShared term v) (FrozenShared term v)
+              FrozenShared term tv v -> gr (FrozenShared term tv v) (FrozenShared term tv v)
 shareGraph (FrozenShared output cmaps) =
     (`runReader` cmaps) $ do
         (_, nodes, edges) <- go output
@@ -1473,8 +1486,8 @@ shareGraph (FrozenShared output cmaps) =
           Just x  -> return x
 
 
-shareGraph' :: (G.DynGraph gr, Ord v, Hashable v, Show v, Pretty term, Ord term) =>
-              FrozenShared term v -> gr String String
+shareGraph' :: (G.DynGraph gr, Ord v, Hashable v, Show v, Pretty(term tv), Ord(term tv)) =>
+              FrozenShared term tv v -> gr String String
 shareGraph' (FrozenShared output cmaps) =
     (`runReader` cmaps) $ do
         (_, nodes, edges) <- go output
@@ -1549,8 +1562,8 @@ shareGraph' (FrozenShared output cmaps) =
           Nothing -> lookupError
           Just x  -> return x
 
-removeExist :: ( Hashable term, Ord term, Ord v, Hashable v, Show v, ECircuit c, NatCircuit c, OneCircuit c, Co c v
-               ) => FrozenShared term v -> c v
+removeExist :: ( Hashable(term tv), Ord(term tv), Ord v, Hashable v, Show v, ECircuit c, NatCircuit c, OneCircuit c, Co c v
+               ) => FrozenShared term tv v -> c v
 removeExist (FrozenShared code maps) = go code
   where
   -- dumb (for playing): remove existentials by replacing them with their assigned value (if any)
@@ -1585,9 +1598,9 @@ removeExist (FrozenShared code maps) = go code
 
 -- | Returns an equivalent circuit with no iff, xor, onlyif, ite, nat, eq and lt nodes.
 removeComplex :: ( Ord v, Hashable v, Show v
-                 , Ord term, Hashable term
+                 , Ord(term tv), Hashable(term tv)
                  , Circuit c, Co c v
-                 ) => [v] -> FrozenShared term v -> (c v, v :->: [v])
+                 ) => [v] -> FrozenShared term tv v -> (c v, v :->: [v])
 removeComplex freshVars c = assert disjoint $ (go code, bitnats)
   where
   -- casting removes the one constraints
@@ -1713,19 +1726,20 @@ recordVar ccode comp = do
 -- `FrozenShared' circuit, and the mapping between the variables in the CNF and
 -- the circuit elements of the circuit.
 
-data RPOCircuitProblem term v = RPOCircuitProblem
+data RPOCircuitProblem term tv v = RPOCircuitProblem
     { rpoProblemCnf     :: CNF
-    , rpoProblemCircuit :: !(FrozenShared term v)
+    , rpoProblemCircuit :: !(FrozenShared term tv v)
     , rpoProblemCodeMap :: !(Var :<->: CCode)
     , rpoProblemBitMap  :: !(Var :->: (CCode,Int)) }
 
 -- Optimal CNF conversion
-toCNF' :: (Hashable term, Ord term, Ord v, Hashable v, Show v) => [v] -> FrozenShared term v -> (ECircuitProblem v, v :->: [v])
+toCNF' :: (Hashable(term tv), Ord(term tv), Ord v, Hashable v, Show v) =>
+          [v] -> FrozenShared term tv v -> (ECircuitProblem v, v :->: [v])
 toCNF' freshv = first(ECircuit.toCNF . ECircuit.runShared) . removeComplex freshv
 
 -- Fast CNF conversion
-toCNF :: (Ord v, Hashable v, Show v, Ord term, Hashable term, Show term) =>
-         FrozenShared term v -> RPOCircuitProblem term v
+toCNF :: (Ord v, Hashable v, Show v, Ord(term tv), Hashable(term tv), Show(term tv)) =>
+         FrozenShared term tv v -> RPOCircuitProblem term tv v
 toCNF c@(FrozenShared !sharedCircuit !circuitMaps) =
     CE.assert (validCMaps circuitMaps) $
     let (m,cnf) = (\x -> execRWS x circuitMaps emptyCNFState) $ do
@@ -1983,7 +1997,7 @@ instance Hashable Var where
   insert (V i) v (VarTrie t) = VarTrie (HashMap.insert i v t)
   toList (VarTrie t) = map (first V) (HashMap.toList t)
 -}
-instance Hashable Var where hash (V i) = i
+deriving instance Hashable Var -- where hashWithSalt s (V i) = hashWithSalt s i
 
 -- ----------
 -- Helpers
@@ -2030,3 +2044,5 @@ assert' msg cond foo =
                    )
 
 on cmp f x y = f x `cmp` f y
+chunk :: Int -> [e] -> [[e]]
+chunk = chunksOf
