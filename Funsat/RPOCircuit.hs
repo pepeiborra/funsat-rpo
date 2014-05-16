@@ -327,7 +327,7 @@ termEq_ s t
    | otherwise
    = ite (listAF id_s)
          (ite (listAF id_t)
-              ((precedence id_s `and` listAF id_t) --> exEq id_s id_t ss tt)
+              ((precedence id_s `eq` precedence id_t) `and` exEq id_s id_t ss tt)
               (all (\(t_j,j) -> inAF j id_t --> s ~~ t_j) (zip tt [1..])))
          (all (\(s_i,i) -> inAF i id_s --> s_i ~~ t) (zip ss [1..]))
 
