@@ -22,6 +22,7 @@ module Funsat.RPOCircuit.Symbols (
   lpo,  LPOsymbol(..),
   mpo,  MPOsymbol(..),
   Natural(..),
+  SymbolFactory,
   SymbolRes(..), mkSymbolDecoder,
   Status(..), mkStatus
   ) where
@@ -82,7 +83,7 @@ mkSymbolDecoder the_id n_b list_b pos_bb perm_bb mset = do
                         (SymbolRes the_id n statusMsg (Left $ headS the_positions))
                    else (SymbolRes the_id n statusMsg (Right the_positions))
   where
-   headS [] = error ("mkSymbolDecoder: invalid null collapsing AF for  (" ++ show the_id ++ ")")
+   headS [] = error ("mkSymbolDecoder: invalid null collapsing AF for  (" ++ show the_id ++ ") as witnessed by " ++ show list_b)
    headS (x:_) = x
 
    evalVar = evalB . input
@@ -140,25 +141,29 @@ instance ECircuit SomeCircuit where
 -- Generic encoding of RPO symbols with AF
 -- -------------------------------------------------
 
-type SymbolFactory s = (Monad m, ECircuit repr, OneCircuit repr, Co repr v
-                       ,Show id, Ord v, Show v
-                       ) =>
-                        m v -> m(Natural v) -> (id, Int) -> m(s v id, repr v)
+type SymbolFactory s m repr =
+                       (Monad m, ECircuit repr, OneCircuit repr, Co repr (Family.Var s)
+                       ,Show(Family.Id s), Show(Family.Var s),Ord(Family.Var s)) =>
+                          (String -> m (Family.Var s))
+                       -> (String -> m (Natural (Family.Var s)))
+                       -> (Family.Id s, Int)
+                       -> m (s, [(String, repr (Family.Var s))])
 
 class Monad m => MonadCircuit m where
   type Var m
   assertAll :: [SomeCircuit (Var m)] -> m ()
+  assertAll' :: String -> [SomeCircuit (Var m)] -> m ()
 
-newtype CircuitM v m a = CircuitM {unCircuitM::WriterT [SomeCircuit v] m a}
+newtype CircuitM v m a = CircuitM {unCircuitM::WriterT [(String,SomeCircuit v)] m a}
     deriving (Applicative, Functor, Monad, MonadTrans)
 
-runCircuitM :: (Co repr v, OneCircuit repr, ECircuit repr, Monad m) => CircuitM v m a -> m (a, repr v)
-runCircuitM = liftM (second (unC . andL)) . runWriterT . unCircuitM
+--runCircuitM :: (Co repr v, OneCircuit repr, ECircuit repr, Monad m) => CircuitM v m a -> m (a, [String,repr v])
+runCircuitM = liftM (second (map (second unC))) . runWriterT . unCircuitM
 
 instance Monad m => MonadCircuit (CircuitM v m) where
   type Var (CircuitM v m) = v
-  assertAll x = CircuitM $ tell x
-
+  assertAll x = CircuitM $ tell [("", andL x)]
+  assertAll' msg x = CircuitM $ tell [(msg, andL x)]
 
 data RPOSsymbol v a = Symbol { theSymbol    :: a
                              , encodePrec   :: v
@@ -193,18 +198,22 @@ instance HasFiltering (RPOSsymbol v a) where
     listAF_v   = encodeAFlist
     filtering_vv = encodeAFpos
 
-rpos :: SymbolFactory RPOSsymbol
+rpos :: SymbolFactory (RPOSsymbol v id) m repr
 rpos b n = runCircuitM . rposM b n
 
-rposM :: (MonadCircuit (t m), MonadTrans t, Show (Var (t m)), Show a, Ord (Var (t m)), Monad m) =>
-         m (Var (t m)) -> m (Natural (Var (t m))) -> (a, Int) -> t m (RPOSsymbol (Var (t m)) a)
+rposM :: ( MonadCircuit (t m), MonadTrans t
+         , Show (Var (t m)), Show a, Ord (Var (t m)), Monad m) =>
+         (String -> m(Var (t m))) ->
+         (String -> m(Natural (Var (t m)))) ->
+         (a, Int) ->
+         t m (RPOSsymbol (Var (t m)) a)
 rposM booleanm naturalm (x, ar) = do
-  n_b      <- natural
-  perm_bb  <- replicateM ar (replicateM ar boolean)
-  mset     <- boolean
+  n_b      <- natural ("prec_" ++ show x)
+  perm_bb  <- replicateM ar (replicateM ar (boolean ("perm_" ++ show x)))
+  mset     <- boolean ("mset_" ++ show x)
   (list_b:pos_bb) <- case ar of
-                       0 -> do {lb <- boolean; assertAll [input lb]; return [lb]}
-                       _ -> replicateM (ar + 1) boolean
+                       0 -> do {lb <- boolean ("listb_" ++ show x); assertAll [input lb]; return [lb]}
+                       _ -> replicateM (ar + 1) (boolean ("listb_" ++ show x))
 
   let (list_e:pos_ee) = fmap input (list_b:pos_bb)
       perm_ee = (fmap.fmap) input perm_bb
@@ -212,7 +221,7 @@ rposM booleanm naturalm (x, ar) = do
 --  when (P.not defined || isDPSymbol x) $ assert [not $ usable_e]
 
   -- Filtering invariants
-  assertAll [ C.not list_e --> one pos_ee ]
+  assertAll' "list_e" [ C.not list_e --> one pos_ee ]
 
   -- Permutation invariants
   -- -----------------------
@@ -242,8 +251,8 @@ rposM booleanm naturalm (x, ar) = do
              , decodeSymbol = mkSymbolDecoder x n_b list_b pos_bb perm_bb mset}
   where
     (-->)   = onlyif
-    boolean = lift booleanm
-    natural = lift naturalm
+    boolean = lift . booleanm
+    natural = lift . naturalm
 
 -- ----------------------
 -- Term family membership
@@ -271,7 +280,7 @@ newtype LPOSsymbol v a = LPOS{unLPOS::RPOSsymbol v a}
              ,HasPrecedence, HasStatus, HasFiltering
              ,Functor, Foldable)
 
-lpos :: SymbolFactory LPOSsymbol
+lpos :: SymbolFactory (LPOSsymbol v id) m repr
 lpos b n = runCircuitM . lposM b n
 lposM boolean natural x = do
   s <- rposM boolean natural x
@@ -286,7 +295,7 @@ newtype LPOsymbol v a = LPO{unLPO::RPOSsymbol v a}
              ,Functor, Foldable)
 
 
-lpo :: SymbolFactory LPOsymbol
+lpo :: SymbolFactory (LPOsymbol v id) m repr
 lpo b n x = runCircuitM $ do
   s <- rposM b n x
   assertAll [C.not $ useMul s]
@@ -302,7 +311,7 @@ newtype MPOsymbol v a = MPO{unMPO::RPOSsymbol v a}
              ,HasPrecedence, HasStatus, HasFiltering
              ,Functor, Foldable)
 
-mpo :: SymbolFactory MPOsymbol
+mpo :: SymbolFactory (MPOsymbol v id) m repr
 mpo b n x = runCircuitM $ do
   s <- rposM b n x
   assertAll [useMul  s]
@@ -314,7 +323,7 @@ newtype RPOsymbol v a = RPO{unRPO::RPOSsymbol v a}
              ,HasPrecedence, HasStatus, HasFiltering
              ,Functor, Foldable)
 
-rpo :: SymbolFactory RPOsymbol
+rpo :: SymbolFactory (RPOsymbol v id) m repr
 rpo b n x = runCircuitM $ do
   s <- rposM b n x
   return (RPO s)
