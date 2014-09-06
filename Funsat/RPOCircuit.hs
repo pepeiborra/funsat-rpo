@@ -1092,6 +1092,10 @@ instance RPOCircuit (WrapEval (Term termF var))  where
    termGt t u = WrapEval $ unEvalM (Right `liftM` (>)  evalRPO t u)
    termEq t u = WrapEval $ unEvalM (Right `liftM` (~~) evalRPO t u)
 
+instance CastCircuit (WrapEval term) (WrapEval term) where
+  type CastCo (WrapEval term) (WrapEval term) v = ()
+  castCircuit = id
+
 data RPOEval a v = RPO {(>), (>~), (~~) :: a -> a -> EvalM v Bool}
 
 evalRPO :: forall termF id v var.
@@ -1401,6 +1405,9 @@ instance Pretty term => RPOCircuit (Graph term)  where
                    let me = (n, NTermEq (show$ pPrint t) (show$ pPrint u))
                    return (n, [me], [])
 
+instance CastCircuit (Graph term) (Graph term) where
+  type CastCo (Graph term) (Graph term) v = ()
+  castCircuit = id
 
 {-
 defaultNodeAnnotate :: (Show v) => LNode (FrozenShared v) -> [GraphViz.Attribute]
