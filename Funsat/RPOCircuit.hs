@@ -964,8 +964,8 @@ instance (ECircuit c, NatCircuit c, OneCircuit c, RPOCircuit c
   CastCircuit (Tree term) c
  where
   type CastCo (Tree term) c v = ( CoRPO c (TermF term) (Family.Var term) v
-                                , term ~ Term (TermF c) v
-                                , v    ~ Family.Var c
+                                , term ~ Term (TermF c) (Family.Var term)
+--                                , v    ~ Family.Var c
                                 , v    ~ Family.Var (Id(TermF term))
                                 , Foldable (TermF term)
                                 , HasId (TermF term)
