@@ -50,8 +50,8 @@ Library
                        Funsat.RPOCircuit.Symbols
   
   -- Packages needed in order to build this package.
-  Build-depends:       base, ghc-prim, mtl, array, containers, prettyclass, fgl, bifunctors,
-                       bytestring, filepath, narradar-funsat-lang, narradar-term, hashable, hashmap, bimap, split
+  Build-depends:       base, ghc-prim, mtl, array, containers, control-monad-free, prettyclass, fgl, bifunctors,
+                       bytestring, filepath, narradar-funsat-lang, narradar-term, hashable, hashmap, bimap, split, deepseq, prelude-extras
   
   ghc-options: -Wall -Werror -fno-warn-name-shadowing -fno-warn-missing-signatures -fno-warn-orphans
 

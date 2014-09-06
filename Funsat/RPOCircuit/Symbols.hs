@@ -28,6 +28,7 @@ module Funsat.RPOCircuit.Symbols (
   ) where
 
 import           Control.Arrow
+import           Control.DeepSeq
 import qualified Control.Exception                 as CE
 import           Control.Monad
 import           Control.Monad.Writer
@@ -51,7 +52,7 @@ import Text.PrettyPrint.HughesPJClass (Pretty(..))
 -- Type for natural variables
 -- ----------------------------
 
-newtype Natural v = Natural {encodeNatural::v} deriving (Eq,Ord,Show)
+newtype Natural v = Natural {encodeNatural::v} deriving (Eq,Ord,Show,NFData)
 
 -- ----------------------------------------------
 -- Symbol type carrying the result of a solution
@@ -198,6 +199,10 @@ instance HasFiltering (RPOSsymbol v a) where
     listAF_v   = encodeAFlist
     filtering_vv = encodeAFpos
 
+instance (NFData v, NFData a) => NFData(RPOSsymbol v a) where
+  rnf(Symbol s p afl afp perm m dec) =
+    rnf s `seq` rnf p `seq` rnf afl `seq` rnf afp `seq` rnf perm `seq` rnf m `seq` dec `seq` ()
+
 rpos :: SymbolFactory (RPOSsymbol v id) m repr
 rpos b n = runCircuitM . rposM b n
 
@@ -278,7 +283,7 @@ type instance Family.Id (MPOsymbol   v id) = id
 newtype LPOSsymbol v a = LPOS{unLPOS::RPOSsymbol v a}
     deriving (Eq, Ord, Show, Pretty
              ,HasPrecedence, HasStatus, HasFiltering
-             ,Functor, Foldable)
+             ,Functor, Foldable, NFData)
 
 lpos :: SymbolFactory (LPOSsymbol v id) m repr
 lpos b n = runCircuitM . lposM b n
@@ -292,7 +297,7 @@ lposM boolean natural x = do
 newtype LPOsymbol v a = LPO{unLPO::RPOSsymbol v a}
     deriving (Eq, Ord, Show, Pretty
              ,HasPrecedence, HasFiltering
-             ,Functor, Foldable)
+             ,Functor, Foldable, NFData)
 
 
 lpo :: SymbolFactory (LPOsymbol v id) m repr
@@ -309,7 +314,7 @@ instance () => HasStatus (LPOsymbol v a) where
 newtype MPOsymbol v a = MPO{unMPO::RPOSsymbol v a}
     deriving (Eq, Ord, Show, Pretty
              ,HasPrecedence, HasStatus, HasFiltering
-             ,Functor, Foldable)
+             ,Functor, Foldable, NFData)
 
 mpo :: SymbolFactory (MPOsymbol v id) m repr
 mpo b n x = runCircuitM $ do
@@ -321,7 +326,7 @@ mpo b n x = runCircuitM $ do
 newtype RPOsymbol v a = RPO{unRPO::RPOSsymbol v a}
     deriving (Eq, Ord, Show, Pretty
              ,HasPrecedence, HasStatus, HasFiltering
-             ,Functor, Foldable)
+             ,Functor, Foldable, NFData)
 
 rpo :: SymbolFactory (RPOsymbol v id) m repr
 rpo b n x = runCircuitM $ do
@@ -334,6 +339,6 @@ rpo b n x = runCircuitM $ do
 
 #ifdef DEBUG
 
-test = runIdentity $ rpos (return (1::Int)) (return $ Natural 2) ("f", 2)
+--test = runIdentity $ rpos (return (1::Int)) (return $ Natural 2) ("f", 2)
 
 #endif
