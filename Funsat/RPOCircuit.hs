@@ -81,6 +81,7 @@ import qualified Data.Array as A
 import Control.Arrow (first)
 import Control.Exception as CE (assert, throw, catch, evaluate, AssertionFailed(..))
 import Control.Monad.Cont
+import Control.Monad.Free
 import Control.Monad.Reader
 import Control.Monad.RWS (execRWS, tell)
 import Control.Monad.State.Strict hiding ((>=>), forM_)
@@ -120,6 +121,7 @@ import qualified Data.Traversable as T
 import qualified Data.Bimap as Bimap
 import qualified Funsat.ECircuit as ECircuit
 import qualified Prelude as Prelude
+import Prelude.Extras
 import qualified Data.HashMap as HashMap
 
 import Data.Term hiding (Var)
@@ -179,7 +181,7 @@ class Circuit repr => RPOCircuit repr where
     termGt, termGe, termEq :: (termF ~ Family.TermF repr
                               ,id    ~ Family.Id termF
                               ,v     ~ Family.Var id
-                              ,Foldable termF, HasId termF
+                              ,Foldable termF, HasId1 termF
                               ,Eq (Term termF v')
                               ,HasPrecedence id, HasFiltering id, HasStatus id
                               ,CoRPO repr termF v' v
@@ -196,7 +198,7 @@ class (RPOCircuit repr,HasPrecedence id, HasFiltering id, HasStatus id) =>
                         ,v  ~ Family.Var id
                         ,termF ~ Family.TermF repr
                         ,Eq (Term termF v')
-                        ,Foldable termF, HasId termF
+                        ,Foldable termF, HasId1 termF
                         ,CoRPO repr termF v' v
                         ) =>
                         id -> id -> [Term termF v'] -> [Term termF v'] -> repr v
@@ -218,8 +220,8 @@ termGt_, termEq_, termGe_ ::
         (var   ~ Family.Var id
         ,termf ~ Family.TermF repr
         ,id    ~ Family.Id termf
-        ,Eq var', Eq(termf(Free termf var'))
-        ,HasId termf, Foldable termf
+        ,Eq var', Eq1 termf
+        ,Eq id, HasId1 termf, Foldable termf
         ,ECircuit repr, NatCircuit repr
         ,RPOCircuit repr, RPOExtCircuit repr id
         ,CoRPO repr termf var' var
@@ -693,9 +695,10 @@ instance NatCircuit (Shared term tv) where
     nat = Shared . recordC' CNat natMap (\s e -> s{ natMap = e })
 
 instance ( RPOExtCircuit (Shared (Term termF) tv) (Family.Id termF)
+         , Eq (Family.Id termF)
          ) => RPOCircuit (Shared (Term termF) tv)  where
  type CoRPO_ (Shared (Term termF) tv) termF v' v =
-   (Hashable(Term termF tv), Ord(termF(Term termF tv)), Ord tv, tv ~ v')
+   (Hashable(Term termF tv), Ord1 termF, Ord tv, tv ~ v')
  termGt s t = Shared $ do
       env <- get
       case HashMap.lookup (s,t) (termGtMap env) of
@@ -853,7 +856,7 @@ printTree p t = foldTree fn fl f t p where
 
 pP prec myPrec doc = if myPrec Prelude.> prec then doc else parens doc
 
-collectIdsTree :: (Functor t, Foldable t, HasId t) => Tree (Term t v) a -> Set (Id t)
+collectIdsTree :: (Functor t, Foldable t, HasId1 t, Ord(Id t)) => Tree (Term t v) a -> Set (Id t)
 collectIdsTree = foldTree (const mempty) (const mempty) f
   where
    f (TNot t1)       = t1
@@ -968,7 +971,7 @@ instance (ECircuit c, NatCircuit c, OneCircuit c, RPOCircuit c
 --                                , v    ~ Family.Var c
                                 , v    ~ Family.Var (Id(TermF term))
                                 , Foldable (TermF term)
-                                , HasId (TermF term)
+                                , HasId1 (TermF term)
                                 , Eq term
                                 , HasPrecedence (Id (TermF term))
                                 , HasFiltering (Id (TermF term))
@@ -1048,8 +1051,8 @@ instance RPOCircuit Eval  where
   type CoRPO_ Eval termF tv v =
       ( Hashable v
       , Eq (Term termF tv)
-      , Foldable termF, HasId termF
-      , HasStatus (Id termF), HasFiltering (Id termF), HasPrecedence (Id termF)
+      , Foldable termF, HasId1 termF
+      , Eq(Id termF), HasStatus (Id termF), HasFiltering (Id termF), HasPrecedence (Id termF)
       , Pretty (Id termF), Show (Id termF)
       )
 
@@ -1084,9 +1087,9 @@ instance RPOCircuit (WrapEval (Term termF var))  where
        ( var ~ tv
        , Eq var
        , Eq (Term termF var)
-       , Foldable termF, HasId termF
+       , Foldable termF, HasId1 termF
        , HasStatus (Id termF), HasFiltering (Id termF), HasPrecedence (Id termF)
-       , Pretty (Id termF), Show (Id termF)
+       , Eq(Id termF), Pretty (Id termF), Show (Id termF)
        , Hashable v
        )
    termGt t u = WrapEval $ unEvalM (Right `liftM` (>)  evalRPO t u)
@@ -1101,9 +1104,9 @@ data RPOEval a v = RPO {(>), (>~), (~~) :: a -> a -> EvalM v Bool}
 evalRPO :: forall termF id v var.
            (HasPrecedence id, HasStatus id, HasFiltering id
            ,Ord v, Hashable v, Show v
-           ,Pretty id, Show id
+           ,Eq id, Pretty id, Show id
            ,Eq(Term termF var)
-           ,Foldable termF, HasId termF
+           ,Foldable termF, HasId1 termF
            ,id ~ Id termF
            ,v  ~ Family.Var id
            ) => RPOEval (Term termF var) v
