@@ -1,4 +1,5 @@
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE MultiParamTypeClasses, FunctionalDependencies #-}
 {-# LANGUAGE FlexibleContexts, FlexibleInstances #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -15,7 +16,7 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE CPP #-}
 
-module Funsat.RPOCircuit.Symbols (
+module Funsat.TermCircuit.RPO.Symbols (
   rpos, RPOSsymbol(..),
   rpo,  RPOsymbol(..),
   lpos, LPOSsymbol(..),
@@ -27,7 +28,6 @@ module Funsat.RPOCircuit.Symbols (
   Status(..), mkStatus
   ) where
 
-import           Control.Arrow
 import           Control.DeepSeq
 import qualified Control.Exception                 as CE
 import           Control.Monad
@@ -37,22 +37,17 @@ import           Data.List                         (transpose)
 import qualified Data.Term                         as Family
 import           Data.Typeable
 
-import           Funsat.RPOCircuit
 import           Funsat.ECircuit                   hiding (not,or)
 import qualified Funsat.ECircuit                   as C
-import           Funsat.RPOCircuit.Internal
+import           Funsat.TermCircuit
+import           Funsat.TermCircuit.Internal
+import           Funsat.TermCircuit.Symbols
 
 #ifdef DEBUG
 import           Control.Monad.Identity
 #endif
-import Control.Applicative (Applicative)
+
 import Text.PrettyPrint.HughesPJClass (Pretty(..))
-
--- ----------------------------
--- Type for natural variables
--- ----------------------------
-
-newtype Natural v = Natural {encodeNatural::v} deriving (Eq,Ord,Show,NFData)
 
 -- ----------------------------------------------
 -- Symbol type carrying the result of a solution
@@ -109,63 +104,6 @@ mkStatus mul perm
     oneOrNone (False:xx) = oneOrNone xx
     oneOrNone (True:xx)  = not $ or xx
 
--- --------------------------------
--- Typing untyped circuits
--- --------------------------------
-
-newtype SomeCircuit v = SomeCircuit { unC :: forall repr . (Circuit repr, OneCircuit repr, ECircuit repr, Co repr v) => repr v }
-
-liftSomeCircuit :: (forall repr . (ECircuit repr, Co repr v) => repr v -> repr v) -> SomeCircuit v -> SomeCircuit v
-liftSomeCircuit  f (SomeCircuit x) = SomeCircuit (f x)
-liftSomeCircuit2 :: (forall repr . (ECircuit repr, Co repr v) => repr v -> repr v -> repr v) -> SomeCircuit v -> SomeCircuit v -> SomeCircuit v
-liftSomeCircuit2 f (SomeCircuit x) (SomeCircuit y) = SomeCircuit (f x y)
-
-instance Circuit SomeCircuit where
-  type Co SomeCircuit v = ()
-  true = SomeCircuit true
-  false = SomeCircuit false
-  input v = SomeCircuit (input v)
-  not = liftSomeCircuit C.not
-  and = liftSomeCircuit2 C.and
-  or  = liftSomeCircuit2 C.or
-
-instance OneCircuit SomeCircuit where
-  one xx = SomeCircuit (one $ map unC xx)
-
-instance ECircuit SomeCircuit where
-  onlyif = liftSomeCircuit2 C.onlyif
-  iff = liftSomeCircuit2 C.iff
-  xor = liftSomeCircuit2 C.xor
-  ite (SomeCircuit a) (SomeCircuit b) (SomeCircuit c) = SomeCircuit (ite a b c)
-
--- -------------------------------------------------
--- Generic encoding of RPO symbols with AF
--- -------------------------------------------------
-
-type SymbolFactory s m repr =
-                       (Monad m, ECircuit repr, OneCircuit repr, Co repr (Family.Var s)
-                       ,Show(Family.Id s), Show(Family.Var s),Ord(Family.Var s)) =>
-                          (String -> m (Family.Var s))
-                       -> (String -> m (Natural (Family.Var s)))
-                       -> (Family.Id s, Int)
-                       -> m (s, [(String, repr (Family.Var s))])
-
-class Monad m => MonadCircuit m where
-  type Var m
-  assertAll :: [SomeCircuit (Var m)] -> m ()
-  assertAll' :: String -> [SomeCircuit (Var m)] -> m ()
-
-newtype CircuitM v m a = CircuitM {unCircuitM::WriterT [(String,SomeCircuit v)] m a}
-    deriving (Applicative, Functor, Monad, MonadTrans)
-
---runCircuitM :: (Co repr v, OneCircuit repr, ECircuit repr, Monad m) => CircuitM v m a -> m (a, [String,repr v])
-runCircuitM = liftM (second (map (second unC))) . runWriterT . unCircuitM
-
-instance Monad m => MonadCircuit (CircuitM v m) where
-  type Var (CircuitM v m) = v
-  assertAll x = CircuitM $ tell [("", andL x)]
-  assertAll' msg x = CircuitM $ tell [(msg, andL x)]
-
 data RPOSsymbol v a = Symbol { theSymbol    :: a
                              , encodePrec   :: v
                              , encodeAFlist :: v
@@ -173,9 +111,7 @@ data RPOSsymbol v a = Symbol { theSymbol    :: a
                              , encodePerm   :: [[v]]
                              , encodeUseMset:: v
                              , decodeSymbol :: EvalM v (SymbolRes a)}
-   deriving Show
-
-instance Show (EvalM v a) where show _ = "evalM computation"
+   deriving (Show, Typeable)
 
 instance Pretty a => Pretty (RPOSsymbol v a) where pPrint = pPrint . theSymbol
 
@@ -255,7 +191,6 @@ rposM booleanm naturalm (x, ar) = do
              , encodeUseMset= mset
              , decodeSymbol = mkSymbolDecoder x n_b list_b pos_bb perm_bb mset}
   where
-    (-->)   = onlyif
     boolean = lift . booleanm
     natural = lift . naturalm
 
@@ -281,7 +216,7 @@ type instance Family.Id (MPOsymbol   v id) = id
 -- LPO with status
 
 newtype LPOSsymbol v a = LPOS{unLPOS::RPOSsymbol v a}
-    deriving (Eq, Ord, Show, Pretty
+    deriving (Eq, Ord, Show, Pretty, Typeable
              ,HasPrecedence, HasStatus, HasFiltering
              ,Functor, Foldable, NFData)
 
@@ -295,7 +230,7 @@ lposM boolean natural x = do
 -- LPO
 
 newtype LPOsymbol v a = LPO{unLPO::RPOSsymbol v a}
-    deriving (Eq, Ord, Show, Pretty
+    deriving (Eq, Ord, Show, Pretty, Typeable
              ,HasPrecedence, HasFiltering
              ,Functor, Foldable, NFData)
 
@@ -312,7 +247,7 @@ instance () => HasStatus (LPOsymbol v a) where
 
 -- MPO
 newtype MPOsymbol v a = MPO{unMPO::RPOSsymbol v a}
-    deriving (Eq, Ord, Show, Pretty
+    deriving (Eq, Ord, Show, Pretty, Typeable
              ,HasPrecedence, HasStatus, HasFiltering
              ,Functor, Foldable, NFData)
 
@@ -324,7 +259,7 @@ mpo b n x = runCircuitM $ do
 
 -- RPO
 newtype RPOsymbol v a = RPO{unRPO::RPOSsymbol v a}
-    deriving (Eq, Ord, Show, Pretty
+    deriving (Eq, Ord, Show, Pretty, Typeable
              ,HasPrecedence, HasStatus, HasFiltering
              ,Functor, Foldable, NFData)
 
