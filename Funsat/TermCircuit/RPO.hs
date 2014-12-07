@@ -37,6 +37,7 @@ termGt_, termEq_ ::
         ,Eq var', Eq1 termf
         ,Eq id, HasId1 termf, Foldable termf
         ,ECircuit repr, NatCircuit repr
+        ,HasPrecedence id, HasFiltering id, HasStatus id, IsSimple id
         ,TermExtCircuit repr id, Co repr var, CoTerm repr termf var' var
         ) =>
         Term termf var' -> Term termf var' -> repr var
@@ -130,7 +131,7 @@ instance TermCircuit Eval  where
       ( Hashable v
       , Eq (Term termF tv)
       , Foldable termF, HasId1 termF
-      , Eq(Id termF), HasStatus (Id termF), HasFiltering (Id termF), HasPrecedence (Id termF)
+      , Eq(Id termF), HasStatus (Id termF), HasFiltering (Id termF), HasPrecedence (Id termF), IsSimple(Id termF)
       , Pretty (Id termF), Show (Id termF)
       )
 
@@ -143,7 +144,7 @@ instance TermCircuit (WrapEval (Term termF var))  where
        , Eq var
        , Eq (Term termF var)
        , Foldable termF, HasId1 termF
-       , HasStatus (Id termF), HasFiltering (Id termF), HasPrecedence (Id termF)
+       , HasStatus (Id termF), HasFiltering (Id termF), HasPrecedence (Id termF), IsSimple(Id termF)
        , Eq(Id termF), Pretty (Id termF), Show (Id termF)
        , Hashable v
        )
@@ -155,7 +156,7 @@ instance TermCircuit (WrapEval (Term termF var))  where
 -- -------
 
 evalRPO :: forall termF id v var.
-           (HasPrecedence id, HasStatus id, HasFiltering id
+           (HasPrecedence id, HasStatus id, HasFiltering id, IsSimple id
            ,Ord v, Hashable v, Show v
            ,Eq id, Pretty id, Show id
            ,Eq(Term termF var)
@@ -335,7 +336,7 @@ evalRPO = Term{..} where
     return perm
 
   compFiltering id = do
-    isList:filtering <- mapM (evalB.input) (listAF_v id : filtering_vv id)
+    isList:filtering <- mapM (evalB.input) (isSimple_v id : filtering_vv id)
     let positions = [ i | (i, True) <- zip [1..] filtering ]
     return $ if isList then Right positions
              else assert'

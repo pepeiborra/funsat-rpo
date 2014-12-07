@@ -1,13 +1,11 @@
-{-# LANGUAGE MultiParamTypeClasses, FunctionalDependencies #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE PatternGuards #-}
-{-# LANGUAGE OverlappingInstances #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE FlexibleContexts, FlexibleInstances, TypeSynonymInstances #-}
-{-# LANGUAGE EmptyDataDecls #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE Rank2Types #-}
@@ -35,6 +33,7 @@ module Funsat.TermCircuit
    -- * Type classes for Term identifiers
    ,HasPrecedence(..), precedence
    ,HasFiltering(..), listAF, inAF
+   ,IsSimple(..)
    ,HasStatus(..), useMul, lexPerm
    -- * Concrete implementations
 --   ,runEval, runEvalM, evalB, evalN
@@ -147,15 +146,15 @@ oneDefault (v:vv) = (v `and` none vv) `or` (not v `and` oneDefault vv)
 -- ---------
 
 class HasPrecedence a where precedence_v  :: a ->  Family.Var a
-class HasFiltering  a where listAF_v      :: a ->  Family.Var a
-                            filtering_vv  :: a -> [Family.Var a]
+class HasFiltering  a where filtering_vv  :: a -> [Family.Var a]
+class IsSimple      a where isSimple_v    :: a ->  Family.Var a
 class HasStatus id    where useMul_v      :: id -> Family.Var id
                             lexPerm_vv    :: id -> Maybe [[Family.Var id]]
 
 precedence :: (NatCircuit repr, HasPrecedence id, Co repr v, v ~ Family.Var id) => id -> repr v
 precedence = nat . precedence_v
-listAF :: (Circuit repr, HasFiltering id, Co repr v, v ~ Family.Var id) => id -> repr v
-listAF     = input . listAF_v
+listAF :: (Circuit repr, IsSimple id, Co repr v, v ~ Family.Var id) => id -> repr v
+listAF     = input . isSimple_v
 {- INLINE inAF -}
 inAF   :: (Circuit repr, HasFiltering id, Co repr v, v ~ Family.Var id) => Int -> id -> repr v
 inAF i     = input . (!! pred i) . filtering_vv

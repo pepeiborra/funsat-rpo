@@ -132,8 +132,9 @@ instance HasStatus     (RPOSsymbol v a) where
     lexPerm_vv = Just . encodePerm
 
 instance HasFiltering (RPOSsymbol v a) where
-    listAF_v   = encodeAFlist
     filtering_vv = encodeAFpos
+instance IsSimple (RPOSsymbol v a) where
+    isSimple_v   = encodeAFlist
 
 instance (NFData v, NFData a) => NFData(RPOSsymbol v a) where
   rnf(Symbol s p afl afp perm m dec) =
@@ -217,7 +218,7 @@ type instance Family.Id (MPOsymbol   v id) = id
 
 newtype LPOSsymbol v a = LPOS{unLPOS::RPOSsymbol v a}
     deriving (Eq, Ord, Show, Pretty, Typeable
-             ,HasPrecedence, HasStatus, HasFiltering
+             ,HasPrecedence, HasStatus, HasFiltering, IsSimple
              ,Functor, Foldable, NFData)
 
 lpos :: SymbolFactory (LPOSsymbol v id) m repr
@@ -231,7 +232,7 @@ lposM boolean natural x = do
 
 newtype LPOsymbol v a = LPO{unLPO::RPOSsymbol v a}
     deriving (Eq, Ord, Show, Pretty, Typeable
-             ,HasPrecedence, HasFiltering
+             ,HasPrecedence, HasFiltering, IsSimple
              ,Functor, Foldable, NFData)
 
 
@@ -248,7 +249,7 @@ instance () => HasStatus (LPOsymbol v a) where
 -- MPO
 newtype MPOsymbol v a = MPO{unMPO::RPOSsymbol v a}
     deriving (Eq, Ord, Show, Pretty, Typeable
-             ,HasPrecedence, HasStatus, HasFiltering
+             ,HasPrecedence, HasStatus, HasFiltering, IsSimple
              ,Functor, Foldable, NFData)
 
 mpo :: SymbolFactory (MPOsymbol v id) m repr
@@ -260,7 +261,7 @@ mpo b n x = runCircuitM $ do
 -- RPO
 newtype RPOsymbol v a = RPO{unRPO::RPOSsymbol v a}
     deriving (Eq, Ord, Show, Pretty, Typeable
-             ,HasPrecedence, HasStatus, HasFiltering
+             ,HasPrecedence, HasStatus, HasFiltering, IsSimple
              ,Functor, Foldable, NFData)
 
 rpo :: SymbolFactory (RPOsymbol v id) m repr

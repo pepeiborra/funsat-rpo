@@ -25,7 +25,7 @@ import Prelude.Extras
 import Prelude hiding (or, (>), not, and)
 import qualified Prelude as P
 
-class (TermCircuit repr, HasPrecedence id, HasFiltering id, HasStatus id) =>
+class (TermCircuit repr) =>
       TermExtCircuit repr id where
     exGt, exGe, exEq :: (id ~ Family.Id termF
                         ,v  ~ Family.Var id
