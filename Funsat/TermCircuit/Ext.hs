@@ -10,13 +10,18 @@ module Funsat.TermCircuit.Ext
          lexgt, lexeq,
          lexpgt,lexpeq,
          mulgt,muleq
+   -- * Type classes for Term identifiers
+   ,HasPrecedence(..), precedence
+   ,HasFiltering(..), listAF, inAF
+   ,IsSimple(..)
+   ,HasStatus(..), HasLexMul(..), useMul, lexPerm
        )where
 
 import Data.Foldable (Foldable)
 import Data.Term as Family
-import Funsat.ECircuit
+import Funsat.ECircuit    hiding (max)
 import Funsat.TermCircuit hiding ((>),(~~))
-import Funsat.TermCircuit.Internal
+import Funsat.TermCircuit.Internal.Syntax
 import Control.Monad.Cont (cont, runCont, replicateM)
 import Data.List (tails, transpose)
 import Control.Applicative (ZipList(..))
@@ -32,15 +37,38 @@ class (TermCircuit repr) =>
                         ,termF ~ Family.TermF repr
                         ,Eq1 termF, Eq v'
                         ,Foldable termF, HasId1 termF
-                        ,Co repr v
                         ,CoTerm repr termF v' v
                         ) =>
                         id -> id ->
                         [Term termF v'] -> [Term termF v'] -> repr v
     exGe id_s id_t ss tt = exGt id_s id_t ss tt `or` exEq id_s id_t ss tt
+    exEq id_s id_t ss tt = not(exGt id_s id_t ss tt) `and` exGe id_s id_t ss tt
+
 
 (>)  = termGt
 (~~) = termEq
+
+-- ---------
+-- Inputs
+-- ---------
+
+class HasPrecedence a where precedence_v  :: a -> Natural (Family.Var a)
+class HasFiltering  a where filtering_vv  :: a -> [Family.Var a]
+class IsSimple      a where isSimple_v    :: a ->  Family.Var a
+class HasLexMul    id where useMul_v      :: id -> Family.Var id
+class HasStatus    id where lexPerm_vv    :: id -> Maybe [[Family.Var id]]
+
+precedence :: (NatCircuit repr, HasPrecedence id, Co repr v, v ~ Family.Var id) => id -> repr v
+precedence = nat . precedence_v
+listAF :: (Circuit repr, IsSimple id, Co repr v, v ~ Family.Var id) => id -> repr v
+listAF     = input . isSimple_v
+{- INLINE inAF -}
+inAF   :: (Circuit repr, HasFiltering id, Co repr v, v ~ Family.Var id) => Int -> id -> repr v
+inAF i     = input . (!! pred i) . filtering_vv
+useMul :: (Circuit repr, HasLexMul id, Co repr v, v ~ Family.Var id) => id -> repr v
+useMul     = input . useMul_v
+lexPerm :: (Circuit repr, HasStatus id, Co repr v, v ~ Family.Var id) => id -> Maybe [[repr v]]
+lexPerm    = (fmap.fmap.fmap) input . lexPerm_vv
 
 -- -----------------------------------
 -- Lexicographic extension with AF

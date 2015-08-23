@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies, ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts, FlexibleInstances, TypeSynonymInstances #-}
@@ -11,7 +12,7 @@ import Data.Hashable
 import Data.Term as Family
 import Funsat.ECircuit
 import Funsat.TermCircuit
-import Funsat.TermCircuit.Internal
+import Funsat.TermCircuit.Internal.Syntax
 import Funsat.TermCircuit.Ext
 import Text.PrettyPrint.HughesPJClass hiding (first)
 import System.IO.Unsafe
@@ -37,7 +38,7 @@ termGt_, termEq_ ::
         ,Eq var', Eq1 termf
         ,Eq id, HasId1 termf, Foldable termf
         ,ECircuit repr, NatCircuit repr
-        ,HasPrecedence id, HasFiltering id, HasStatus id, IsSimple id
+        ,HasPrecedence id, HasFiltering id, HasStatus id, IsSimple id, HasLexMul id
         ,TermExtCircuit repr id, Co repr var, CoTerm repr termf var' var
         ) =>
         Term termf var' -> Term termf var' -> repr var
@@ -126,28 +127,32 @@ instance OneCircuit Eval where
                                         (_:[]) -> True
                                         _      -> False)
 
-instance TermCircuit Eval  where
-  type CoTerm_ Eval termF tv v =
+type instance CoTerm_ Eval termF tv v =
       ( Hashable v
       , Eq (Term termF tv)
       , Foldable termF, HasId1 termF
-      , Eq(Id termF), HasStatus (Id termF), HasFiltering (Id termF), HasPrecedence (Id termF), IsSimple(Id termF)
+      , Eq(Id termF)
+      , HasStatus (Id termF), HasFiltering (Id termF), HasPrecedence (Id termF)
+      , HasLexMul (Id termF), IsSimple(Id termF)
       , Pretty (Id termF), Show (Id termF)
       )
+instance TermCircuit Eval  where
 
   termGt t u = unEvalM (Right `liftM` (>) evalRPO t u)
   termEq t u = unEvalM (Right `liftM` (~~) evalRPO t u)
 
-instance TermCircuit (WrapEval (Term termF var))  where
-   type CoTerm_ (WrapEval (Term termF var)) termF tv v =
+type instance CoTerm_ (WrapEval (Term termF var)) termF tv v =
        ( var ~ tv
        , Eq var
        , Eq (Term termF var)
        , Foldable termF, HasId1 termF
-       , HasStatus (Id termF), HasFiltering (Id termF), HasPrecedence (Id termF), IsSimple(Id termF)
+       , HasStatus (Id termF), HasFiltering (Id termF), HasPrecedence (Id termF)
+       , HasLexMul (Id termF), IsSimple(Id termF)
        , Eq(Id termF), Pretty (Id termF), Show (Id termF)
        , Hashable v
        )
+
+instance TermCircuit (WrapEval (Term termF var))  where
    termGt t u = WrapEval $ unEvalM (Right `liftM` (>)  evalRPO t u)
    termEq t u = WrapEval $ unEvalM (Right `liftM` (~~) evalRPO t u)
 
@@ -156,7 +161,7 @@ instance TermCircuit (WrapEval (Term termF var))  where
 -- -------
 
 evalRPO :: forall termF id v var.
-           (HasPrecedence id, HasStatus id, HasFiltering id, IsSimple id
+           (HasPrecedence id, HasStatus id, HasFiltering id, IsSimple id, HasLexMul id
            ,Ord v, Hashable v, Show v
            ,Eq id, Pretty id, Show id
            ,Eq(Term termF var)

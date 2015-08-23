@@ -37,10 +37,11 @@ import           Data.List                         (transpose)
 import qualified Data.Term                         as Family
 import           Data.Typeable
 
-import           Funsat.ECircuit                   hiding (not,or)
+import           Funsat.ECircuit                   hiding (not,or, fromInteger)
 import qualified Funsat.ECircuit                   as C
 import           Funsat.TermCircuit
-import           Funsat.TermCircuit.Internal
+import           Funsat.TermCircuit.Ext
+import           Funsat.TermCircuit.Internal.Syntax
 import           Funsat.TermCircuit.Symbols
 
 #ifdef DEBUG
@@ -83,7 +84,7 @@ mkSymbolDecoder the_id n_b list_b pos_bb perm_bb mset = do
    headS (x:_) = x
 
    evalVar = evalB . input
-   evalNat = evalN . nat . encodeNatural
+   evalNat = evalN . nat
 
 -- -------
 -- Status
@@ -105,7 +106,7 @@ mkStatus mul perm
     oneOrNone (True:xx)  = not $ or xx
 
 data RPOSsymbol v a = Symbol { theSymbol    :: a
-                             , encodePrec   :: v
+                             , encodePrec   :: Natural v
                              , encodeAFlist :: v
                              , encodeAFpos  :: [v]
                              , encodePerm   :: [[v]]
@@ -127,9 +128,8 @@ instance Functor (RPOSsymbol v) where
 instance Foldable (RPOSsymbol v) where foldMap f Symbol{..} = f theSymbol
 
 instance HasPrecedence (RPOSsymbol v a) where precedence_v = encodePrec
-instance HasStatus     (RPOSsymbol v a) where
-    useMul_v   = encodeUseMset
-    lexPerm_vv = Just . encodePerm
+instance HasLexMul     (RPOSsymbol v a) where useMul_v     = encodeUseMset
+instance HasStatus     (RPOSsymbol v a) where lexPerm_vv   = Just . encodePerm
 
 instance HasFiltering (RPOSsymbol v a) where
     filtering_vv = encodeAFpos
@@ -185,7 +185,7 @@ rposM booleanm naturalm (x, ar) = do
   return $
              Symbol
              { theSymbol    = x
-             , encodePrec   = encodeNatural n_b
+             , encodePrec   = n_b
              , encodeAFlist = list_b
              , encodeAFpos  = pos_bb
              , encodePerm   = perm_bb
@@ -218,7 +218,7 @@ type instance Family.Id (MPOsymbol   v id) = id
 
 newtype LPOSsymbol v a = LPOS{unLPOS::RPOSsymbol v a}
     deriving (Eq, Ord, Show, Pretty, Typeable
-             ,HasPrecedence, HasStatus, HasFiltering, IsSimple
+             ,HasPrecedence, HasStatus, HasFiltering, HasLexMul, IsSimple
              ,Functor, Foldable, NFData)
 
 lpos :: SymbolFactory (LPOSsymbol v id) m repr
@@ -232,7 +232,7 @@ lposM boolean natural x = do
 
 newtype LPOsymbol v a = LPO{unLPO::RPOSsymbol v a}
     deriving (Eq, Ord, Show, Pretty, Typeable
-             ,HasPrecedence, HasFiltering, IsSimple
+             ,HasPrecedence, HasFiltering, HasLexMul, IsSimple
              ,Functor, Foldable, NFData)
 
 
@@ -243,13 +243,12 @@ lpo b n x = runCircuitM $ do
   return (LPO s)
 
 instance () => HasStatus (LPOsymbol v a) where
-    useMul_v     = encodeUseMset . unLPO
     lexPerm_vv _ = Nothing
 
 -- MPO
 newtype MPOsymbol v a = MPO{unMPO::RPOSsymbol v a}
     deriving (Eq, Ord, Show, Pretty, Typeable
-             ,HasPrecedence, HasStatus, HasFiltering, IsSimple
+             ,HasPrecedence, HasStatus, HasFiltering, IsSimple, HasLexMul
              ,Functor, Foldable, NFData)
 
 mpo :: SymbolFactory (MPOsymbol v id) m repr
@@ -261,7 +260,7 @@ mpo b n x = runCircuitM $ do
 -- RPO
 newtype RPOsymbol v a = RPO{unRPO::RPOSsymbol v a}
     deriving (Eq, Ord, Show, Pretty, Typeable
-             ,HasPrecedence, HasStatus, HasFiltering, IsSimple
+             ,HasPrecedence, HasStatus, HasFiltering, IsSimple, HasLexMul
              ,Functor, Foldable, NFData)
 
 rpo :: SymbolFactory (RPOsymbol v id) m repr

@@ -47,23 +47,31 @@ Library
   Exposed-modules:     Funsat.TermCircuit
                        Funsat.TermCircuit.Ext
                        Funsat.TermCircuit.Symbols
+                       Funsat.TermCircuit.SomeCircuit
                        Funsat.TermCircuit.RPO
                        Funsat.TermCircuit.RPO.Symbols
---                       Funsat.WPOCircuit
---                       Funsat.WPOCircuit.Symbols
+                       Funsat.TermCircuit.WPO
+                       Funsat.TermCircuit.WPO.Symbols
+                       Funsat.TermCircuit.WPO.POL
+                       Funsat.TermCircuit.WPO.SUM
+                       Funsat.TermCircuit.WPO.MAX
+                       Funsat.TermCircuit.WPO.MPOL
   Other-modules:
-                       Funsat.TermCircuit.Internal
+                       Funsat.TermCircuit.Internal.Syntax
   
   -- Packages needed in order to build this package.
-  Build-depends:       base, ghc-prim, mtl, array, containers, control-monad-free, pretty, fgl, bifunctors,
-                       bytestring, filepath, narradar-funsat-lang, narradar-term, hashable, deepseq, prelude-extras
+  Build-depends:       base, ghc-prim, mtl, array, containers, control-monad-free,
+                       pretty, fgl, bifunctors,
+                       bytestring, filepath,
+                       narradar-funsat-lang >= 0.9,
+                       narradar-term, hashable, deepseq, prelude-extras
   
-  ghc-options: -Wall -Werror -fno-warn-name-shadowing -fno-warn-missing-signatures -fno-warn-orphans -fno-warn-unused-binds -fno-warn-unused-matches
+  ghc-options: -Wall -Werror -fno-warn-name-shadowing -fno-warn-missing-signatures -fno-warn-orphans -fno-warn-unused-binds -fno-warn-unused-matches -fno-warn-dodgy-imports -fno-warn-unused-imports
 
   extensions: CPP
 
   default-language: Haskell2010
-
+  ghc-prof-options: -fprof-auto-calls
   -- Modules not exported by this package.
   -- Other-modules:       
   
