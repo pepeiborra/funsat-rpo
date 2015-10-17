@@ -41,7 +41,7 @@ data SUMOptions = SUMOptions { statusType :: WPOStatus }
 
 sum :: SUMOptions -> Natural v -> SymbolFactory (SUM v id) m repr
 sum SUMOptions{..} w0 b n x = runCircuitM $ sumM opts' w0 b n x where
-  opts' = WPOOptions{statusType, coefficients = Fixed 0, constants = Fixed 0}
+  opts' = WPOOptions{statusType, coefficients = Fixed 0, constants = Fixed 0, allowPrecedences = True}
 
 sumM opts w0 b n x = do
   POL s <- polM opts w0 b n (const Algebra.SUM) x

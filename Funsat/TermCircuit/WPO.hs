@@ -27,6 +27,7 @@ class (HasPrecedence id, HasStatus id, HasFiltering id) =>  WPOSymbol id where
   getC   :: id -> [Natural(Family.Var id)]
   getP   :: id -> [Natural(Family.Var id)]
   getAlg :: id -> Family.Var id
+  isTop  :: id -> Family.Var id
 
 -- WPO is algebra + simplification ordering
 -- There are many algebras, but the simplification constraints are fixed
@@ -47,7 +48,7 @@ class WPOCircuit repr => WPOAlgebra repr where
 
 termGte cmp1 s t = s `aGt` t \/ ( aEq s t /\ cmp1 s t)
 termGt_ = termGte (sgte False)
-termGe_ = termGte (sgte True)
+termGe_ = termGte (sgte True )
 
 sgte ::
         (var   ~ Family.Var id
@@ -57,12 +58,12 @@ sgte ::
         ,Eq id, HasId1 termf, Foldable termf
         ,ECircuit repr, NatCircuit repr
         ,TermExtCircuit repr id
-        ,HasFiltering id, HasPrecedence id
+        ,WPOSymbol id
         ,CoTerm repr termf var' var
         ) =>
         Bool -> Term termf var' -> Term termf var' -> repr var
 
--- Simplification ordering
+-- Simplification ordering or reduction pair
 sgte isGe s t
 --    | pprTrace (text "termGt_" <+> pPrint s <+> pPrint t) False = undefined
     | s == t = if isGe then true else false
@@ -74,8 +75,13 @@ sgte isGe s t
     | Just id_s <- rootSymbol s
     = cond1 id_s tt_s
 
+    -- cond3 and cond4 correspond to the refinements for reduction pairs in Akihisa's thesis
+    -- They require empty status functions and therefore by construction are not available for simplification orderings
     | Just id_t <- rootSymbol t
     = cond3 id_t
+
+    | Just id_s <- rootSymbol s
+    = cond4 id_s
 
     | otherwise = false
    where
@@ -94,6 +100,8 @@ sgte isGe s t
                   (ex id_s id_t tt_s tt_t)))
 
     cond3 id_t = eq (precedence id_t) (fromInteger 0) /\ none(map input $ filtering_vv id_t)
+
+    cond4 id_s = input(isTop id_s)
 
     all f = andL . map f
     any f = orL  . map f

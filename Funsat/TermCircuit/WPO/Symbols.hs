@@ -19,7 +19,7 @@ module Funsat.TermCircuit.WPO.Symbols where
 
 import Control.DeepSeq
 import Control.Exception as CE
-import Control.Monad (forM, forM_, replicateM)
+import Control.Monad (forM, forM_, replicateM, unless, when)
 import Control.Monad.Trans (MonadTrans, lift)
 import Data.Foldable(Foldable(foldMap))
 import Data.List (transpose)
@@ -95,13 +95,14 @@ mkSymbolDecoder the_id interpretAlgebraBit algebra n_n w_n cs_nn cp_nn sel_bb pe
 
 data WPOSymbolBase v a =
      Symbol  { theSymbol     :: a
-             , encodePrec    :: Natural v
+             , encodePrec    :: Natural v -- <= 100000
              , encodePerm    :: [[v]]
              , encodeSel     :: [v]
              , encodeW       :: Natural v
              , encodeC       :: [Natural v]
              , encodeP       :: [Natural v]
              , encodeAlgebra :: v -- 0 for POL and 1 for MAX
+             , encodeIsTop   :: v -- if not top and prec = 100000 then perm is empty
              , decodeSymbol  :: EvalM v (SymbolRes a)
              }
    deriving (Show, Typeable, Generic)
@@ -127,6 +128,7 @@ instance WPOSymbol     (WPOSymbolBase v a) where
   getC = encodeC
   getP = encodeP
   getAlg = encodeAlgebra
+  isTop = encodeIsTop
 
 instance (NFData v, NFData a) => NFData(WPOSymbolBase v a)
 
@@ -139,13 +141,14 @@ data WPOStatus = Empty | Total | Partial deriving (Typeable, Generic, Show)
 data WPOOptions =
   WPOOptions { constants, coefficients :: WPORange
              , statusType :: WPOStatus
---             , allowQuasiPrecedence :: Bool
+             , allowPrecedences :: Bool
              } deriving (Typeable, Generic, Show)
 
 wpoOptions = WPOOptions
              { constants    = Variable Nothing Nothing
              , coefficients = Variable Nothing Nothing
-             , statusType   = Partial }
+             , statusType   = Partial
+             , allowPrecedences = True}
 
 wpoM :: ( MonadCircuit (t m), MonadTrans t
          , Show (Var (t m)), Show a, Ord (Var (t m)), Monad m) =>
@@ -163,12 +166,13 @@ wpoM booleanm naturalm WPOOptions{..} interpretAlgebraBit (x, ar) = do
   c_bb     <- forM [1..ar] $ \i -> (natural $ show x ++ "_c_" ++ show i)
   p_bb     <- forM [1..ar] $ \i -> (natural $ show x ++ "_p_" ++ show i)
   algebra  <- boolean ("max_" ++ show x)
+  isTop    <- boolean ("isTop_" ++ show x)
   let perm_ee = (fmap.fmap) input perm_bb
   let sel_ee  = map input sel_bb
 
   -- Precedence invariant
   -- --------------------
-  assertAll [ nat n_b `ge` fromInteger 0 ]
+  when allowPrecedences $ assertAll [ nat n_b `ge` fromInteger 0 ]
 
   -- Permutation invariants
   -- -----------------------
@@ -180,32 +184,45 @@ wpoM booleanm naturalm WPOOptions{..} interpretAlgebraBit (x, ar) = do
   -- There is one more condition to ensure that  algebra is weakly simple w.r.t. the status
   -- This condition (called SIMP in the WPO thesis) is not definable here, as it is algebra dependent
 
+
+  -- isTop invariants (used for refinement 2)
+  -- ----------------------------------------
+  isEmptyStatus <- boolean ("isEmptyStatus_" ++ show x)
+  assertAll [ input isEmptyStatus <--> none sel_ee ]
+
+  when allowPrecedences $ do
+    let maximum = fromInteger 100000
+    assertAll [  nat n_b `le` maximum
+              , (nat n_b `eq` maximum) --> (input isTop \/ input isEmptyStatus)]
+
   -- WPO encoding options
   -- --------------------
   case statusType of
      Total -> assertAll sel_ee
-     Empty -> assertAll [none sel_ee]
+     Empty -> assertAll [input isEmptyStatus]
      Partial -> return ()
 
   case constants of
      Fixed i -> do
-       let cond p = nat p `eq` fromInteger i
-       assertAll (map cond p_bb)
+       let ci = fromInteger i
+       assertAll [nat p `eq` ci | p <- p_bb]
      Variable minV maxV ->
        forM_ p_bb $ \p -> do
          let np = nat p
-         case minV of Just i -> assertAll [np `gt` fromInteger i] ; _ -> return ()
-         case maxV of Just i -> assertAll [fromInteger i `gt` np] ; _ -> return ()
+         case minV of Just i -> assertAll [np `ge` fromInteger i] ; _ -> return ()
+         case maxV of Just i -> assertAll [fromInteger i `ge` np] ; _ -> return ()
 
   case coefficients of
      Fixed i -> do
-       let cond p = nat p `eq` fromInteger i
-       assertAll (map cond c_bb)
+       let ci = fromInteger i
+       assertAll [nat p `eq` ci | p <- c_bb]
      Variable minV maxV ->
        forM_ c_bb $ \p -> do
          let np = nat p
-         case minV of Just i -> assertAll [np `gt` fromInteger i] ; _ -> return ()
-         case maxV of Just i -> assertAll [fromInteger i `gt` np] ; _ -> return ()
+         case minV of Just i -> assertAll [np `ge` fromInteger i] ; _ -> return ()
+         case maxV of Just i -> assertAll [fromInteger i `ge` np] ; _ -> return ()
+
+  unless allowPrecedences $ assertAll [nat n_b `eq` fromInteger 0]
 
   return $
              Symbol
@@ -217,6 +234,7 @@ wpoM booleanm naturalm WPOOptions{..} interpretAlgebraBit (x, ar) = do
              , encodeP      = p_bb
              , encodeW      = w
              , encodeAlgebra= algebra
+             , encodeIsTop  = isTop
              , decodeSymbol = mkSymbolDecoder x interpretAlgebraBit algebra n_b w c_bb p_bb sel_bb perm_bb}
   where
     boolean = lift . booleanm
