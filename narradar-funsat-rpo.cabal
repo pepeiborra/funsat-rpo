@@ -64,7 +64,8 @@ Library
                        pretty, fgl, bifunctors,
                        bytestring, filepath,
                        narradar-funsat-lang >= 0.9,
-                       narradar-term, hashable, deepseq, prelude-extras
+                       narradar-term, hashable, deepseq, prelude-extras,
+                       strict
   
   ghc-options: -Wall -Werror -fno-warn-name-shadowing -fno-warn-missing-signatures -fno-warn-orphans -fno-warn-unused-binds -fno-warn-unused-matches -fno-warn-dodgy-imports -fno-warn-unused-imports
 

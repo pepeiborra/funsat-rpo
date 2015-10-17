@@ -17,6 +17,7 @@ import Control.Monad.Writer (WriterT, runWriterT, liftM, tell)
 import Control.Monad.Cont (MonadTrans)
 import Control.Applicative (Applicative)
 import Prelude hiding (fromInteger)
+import Data.Strict
 
 -- -------------------------------------------------
 -- Symbol factories
@@ -37,15 +38,17 @@ class Monad m => MonadCircuit m where
   assertAll :: [SomeCircuit (Var m)] -> m ()
   assertAll' :: String -> [SomeCircuit (Var m)] -> m ()
 
-newtype CircuitM v m a = CircuitM {unCircuitM::WriterT [(String,SomeCircuit v)] m a}
+newtype CircuitM v m a = CircuitM {unCircuitM::WriterT [Pair String (SomeCircuit v)] m a}
     deriving (Applicative, Functor, Monad, MonadTrans)
 
 runCircuitM :: (Co repr v, OneCircuit repr, ECircuit repr, NatCircuit repr, Monad m
                ) => CircuitM v m a -> m (a, [(String, repr v)])
-runCircuitM = liftM (second (map (second unC))) . runWriterT . unCircuitM
+runCircuitM = liftM (second (map (second unC . unpack))) . runWriterT . unCircuitM
+
+unpack(a :!: b) = (a,b)
 
 instance Monad m => MonadCircuit (CircuitM v m) where
   type Var (CircuitM v m) = v
-  assertAll x = CircuitM $ tell [("", andL x)]
-  assertAll' msg x = CircuitM $ tell [(msg, andL x)]
+  assertAll x = CircuitM $ tell [ "" :!: andL x]
+  assertAll' msg x = CircuitM $ tell [msg :!: andL x]
 
